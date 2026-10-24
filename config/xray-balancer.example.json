@@ -1,0 +1,176 @@
+{
+  "//": "Example dedicated Xray instance for OpenCode Zen traffic.",
+  "//2": "It listens as an HTTP+SOCKS (mixed) proxy on 127.0.0.1:10900 and spreads",
+  "//3": "requests over several upstream servers with a random balancer, so each",
+  "//4": "request can use a different exit IP (free-tier allowance is per exit IP).",
+  "//5": "Replace the placeholder addresses/ids with your own servers. Keep this",
+  "//6": "file private: it contains credentials.",
+  "log": {
+    "loglevel": "warning"
+  },
+  "dns": {
+    "servers": [
+      "1.1.1.1",
+      "8.8.8.8"
+    ]
+  },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 10900,
+      "protocol": "mixed",
+      "settings": {
+        "auth": "noauth",
+        "udp": true
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls"
+        ],
+        "routeOnly": true
+      },
+      "tag": "mixed-in"
+    },
+    {
+      "listen": "127.0.0.1",
+      "port": 10953,
+      "protocol": "dokodemo-door",
+      "settings": {
+        "address": "1.1.1.1",
+        "network": "tcp,udp",
+        "port": 53
+      },
+      "tag": "dns-in"
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "s1",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "server1.example.com",
+            "port": 443,
+            "users": [
+              {
+                "id": "00000000-0000-0000-0000-000000000000",
+                "encryption": "none",
+                "flow": ""
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "tlsSettings": {
+          "serverName": "server1.example.com",
+          "fingerprint": "firefox"
+        },
+        "wsSettings": {
+          "host": "server1.example.com",
+          "path": "/"
+        }
+      }
+    },
+    {
+      "tag": "s2",
+      "protocol": "trojan",
+      "settings": {
+        "servers": [
+          {
+            "address": "server2.example.com",
+            "port": 443,
+            "password": "REPLACE_ME"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "tlsSettings": {
+          "serverName": "server2.example.com",
+          "fingerprint": "firefox"
+        },
+        "wsSettings": {
+          "host": "server2.example.com",
+          "path": "/"
+        }
+      }
+    },
+    {
+      "tag": "s3",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "server3.example.com",
+            "port": 8443,
+            "users": [
+              {
+                "id": "00000000-0000-0000-0000-000000000000",
+                "encryption": "none",
+                "flow": ""
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {
+          "serverName": "server3.example.com",
+          "fingerprint": "firefox"
+        }
+      }
+    },
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "streamSettings": {
+        "sockopt": {
+          "domainStrategy": "UseIP"
+        }
+      }
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole"
+    }
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "balancers": [
+      {
+        "tag": "zenbal",
+        "selector": [
+          "s1",
+          "s2",
+          "s3"
+        ],
+        "strategy": {
+          "type": "random"
+        }
+      }
+    ],
+    "rules": [
+      {
+        "type": "field",
+        "ip": [
+          "geoip:private"
+        ],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
+        "network": "tcp,udp",
+        "balancerTag": "zenbal"
+      }
+    ]
+  }
+}

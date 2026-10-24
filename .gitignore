@@ -1,0 +1,13 @@
+# Secrets and local state — never commit these
+*.local.json
+zen.json
+.env
+.env.*
+*.pem
+*.key
+auth.json
+service.json
+
+# OS noise
+.DS_Store
+Thumbs.db
