@@ -4,6 +4,7 @@
 #   ./bin/zen-install.sh
 #   ./bin/zen-install.sh --refresh --limit 200
 #   ./bin/zen-install.sh --no-scrape --no-service
+#   ./bin/zen-install.sh --no-restart
 #
 # Installs the scripts into ~/.local/bin, the retry plugin into OpenCode's
 # plugin directory, downloads Xray if it is missing, scrapes public node feeds
@@ -27,9 +28,10 @@ DO_VERIFY=1
 ALLOW_XRAY_DOWNLOAD=1
 FORCE=0
 REFRESH=0
+RESTART_OPENCODE=1
 
 usage() {
-  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -39,6 +41,7 @@ while [ $# -gt 0 ]; do
     --no-scrape) DO_SCRAPE=0; ;;
     --no-service) DO_SERVICE=0; ;;
     --no-verify) DO_VERIFY=0; ;;
+    --no-restart) RESTART_OPENCODE=0; ;;
     --no-xray) ALLOW_XRAY_DOWNLOAD=0; ;;
     --force) FORCE=1; ;;
     --limit) LIMIT="${2:?--limit needs a value}"; shift ;;
@@ -247,8 +250,10 @@ else
 fi
 
 # Pick up the proxy env and the plugin on the next server start.
-if command -v opencode >/dev/null 2>&1; then
+if [ "$RESTART_OPENCODE" = 1 ] && command -v opencode >/dev/null 2>&1; then
   opencode service restart >/dev/null 2>&1 || warn "could not restart the OpenCode service; run: opencode service restart"
+else
+  say "OpenCode service restart skipped; run 'opencode service restart' to load the proxy env and plugin"
 fi
 
 if [ "$DO_VERIFY" = 1 ]; then

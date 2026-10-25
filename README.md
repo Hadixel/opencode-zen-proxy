@@ -94,6 +94,7 @@ Useful install flags:
 ./bin/zen-install.sh --zen-check 5        # verify 5 live exits against Zen
 ./bin/zen-install.sh --no-service         # install files only
 ./bin/zen-install.sh --no-verify          # skip the final exit check
+./bin/zen-install.sh --no-restart         # install/start proxy, leave OpenCode running
 ```
 
 > **Public nodes are shared and untrusted.** Their operators can observe the
