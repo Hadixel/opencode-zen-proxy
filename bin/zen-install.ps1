@@ -24,18 +24,40 @@ $ErrorActionPreference = "Stop"
 
 Write-Host "=== OpenCode Zen Proxy Installer for Windows ===" -ForegroundColor Cyan
 
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptDir = $null
+if ($MyInvocation.MyCommand -and $MyInvocation.MyCommand.Path) {
+    try {
+        $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    } catch {}
+}
+
 if (-not $ScriptDir -or -not (Test-Path (Join-Path $ScriptDir "zen-relay.js"))) {
     # Running from web download (iex): clone or download repo
     $TargetRepo = Join-Path $HOME ".local\share\opencode-zen-proxy"
-    if (-not (Test-Path $TargetRepo)) {
-        Write-Host "Cloning opencode-zen-proxy repository to $TargetRepo..."
-        git clone "https://github.com/Hadixel/opencode-zen-proxy.git" $TargetRepo
+    $gitCmd = Get-Command "git" -ErrorAction SilentlyContinue
+    if ($gitCmd) {
+        if (-not (Test-Path $TargetRepo)) {
+            Write-Host "Cloning opencode-zen-proxy repository to $TargetRepo..."
+            & $gitCmd.Source clone "https://github.com/Hadixel/opencode-zen-proxy.git" $TargetRepo
+        } else {
+            Write-Host "Updating repository at $TargetRepo..."
+            Push-Location $TargetRepo
+            try { & $gitCmd.Source pull origin main } catch {}
+            Pop-Location
+        }
     } else {
-        Write-Host "Updating repository at $TargetRepo..."
-        Push-Location $TargetRepo
-        try { git pull origin main } catch {}
-        Pop-Location
+        Write-Host "Git not found. Downloading repository archive from GitHub..."
+        $zipUrl = "https://github.com/Hadixel/opencode-zen-proxy/archive/refs/heads/main.zip"
+        $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "zen-install-$(Get-Random)"
+        New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+        $zipFile = Join-Path $tmpDir "repo.zip"
+        Invoke-WebRequest -Uri $zipUrl -OutFile $zipFile -UseBasicParsing
+        Expand-Archive -Path $zipFile -DestinationPath $tmpDir -Force
+        $unzipped = Join-Path $tmpDir "opencode-zen-proxy-main"
+        if (Test-Path $TargetRepo) { Remove-Item $TargetRepo -Recurse -Force -ErrorAction SilentlyContinue }
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $TargetRepo) | Out-Null
+        Move-Item -Path $unzipped -Destination $TargetRepo -Force
+        Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }
     $ScriptDir = Join-Path $TargetRepo "bin"
 }
