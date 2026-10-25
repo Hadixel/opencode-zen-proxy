@@ -22,6 +22,7 @@
  *
  * Env:
  *   ZEN_RELAY_CONTROL       control URL (default http://127.0.0.1:10902/rotate)
+ *   ZEN_REFETCH_URL         refetch URL (default control URL with /refetch)
  *   ZEN_RELAY_CONTROL_PORT  used when ZEN_RELAY_CONTROL is unset (default 10902)
  *   ZEN_RETRY_MAX           maximum forced retries (default 8)
  *   ZEN_RETRY_DELAY_MS      delay before a forced retry (default 750)
@@ -32,6 +33,9 @@
 const CONTROL =
   process.env.ZEN_RELAY_CONTROL ||
   `http://127.0.0.1:${process.env.ZEN_RELAY_CONTROL_PORT || 10902}/rotate`;
+const REFETCH =
+  process.env.ZEN_REFETCH_URL ||
+  CONTROL.replace(/\/rotate(?:\?.*)?$/, "/refetch");
 const MAX_RETRIES = Number(process.env.ZEN_RETRY_MAX || 8);
 const RETRY_DELAY_MS = Number(process.env.ZEN_RETRY_DELAY_MS || 750);
 const DEBUG = process.env.ZEN_RETRY_DEBUG === "1";
@@ -70,6 +74,19 @@ const rotateOnce = async (reason) => {
   await rotate(reason);
 };
 
+/** Ask the relay to fetch and validate a fresh pool. The relay owns the lock/cooldown. */
+const refetch = async (reason) => {
+  try {
+    const res = await fetch(REFETCH, {
+      method: "POST",
+      signal: AbortSignal.timeout(2500),
+    });
+    if (DEBUG) log("refetch", reason, await res.text());
+  } catch (error) {
+    if (DEBUG) log("refetch failed", reason, error?.message || error);
+  }
+};
+
 /** Free-tier and quota bodies that OpenCode deliberately refuses to retry. */
 const retryableBody = (body) =>
   typeof body === "string" &&
@@ -103,17 +120,23 @@ export default {
       const status = event.error?.status;
       const body = event.error?.response?.body;
       const type = event.error?.type;
+      const message = event.error?.message;
       const quota =
         status === 403 ||
         status === 429 ||
         type === "provider.free-limit" ||
         type === "provider.rate-limit" ||
         retryableBody(body) ||
-        retryableBody(event.error?.message);
-      if (!quota) return;
+        retryableBody(message);
+      // A dead pool shows up as repeated transport failures, not 429s.
+      const transport =
+        type === "provider.transport" ||
+        /ECONNRESET|ECONNREFUSED|socket connection|transport error/i.test(`${message ?? ""}\n${body ?? ""}`);
+      if (!quota && !transport) return;
       if (!isZen(event)) return;
       if (event.attempt > MAX_RETRIES) {
-        log("retry budget exhausted", event.attempt);
+        log("retry budget exhausted; refetching", event.attempt);
+        void refetch(`exhausted ${status ?? type}`);
         event.decision = { retry: false };
         return;
       }

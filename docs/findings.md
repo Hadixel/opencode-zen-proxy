@@ -145,40 +145,30 @@ With a pool of exits, the rotated tunnel lands on a different exit. The plugin
 caps retries (`ZEN_RETRY_MAX`, default 8) so a fully spent pool still fails
 clearly instead of looping forever.
 
-## 7. Public feed scraper
+## 7. Public feed scraper and validator
 
-`bin/zen-scrape.js` was measured against the default feeds on 2026-10-25. The
-counts move daily; the point is the formats and the funnel:
+The default feed is
+[0xRadikal/Free-v2ray-Configs](https://github.com/0xRadikal/Free-v2ray-Configs)
+(`top100.txt`). It is a plain subscription file with comments and raw
+`vmess://`/`vless://`/`ss://` lines. Measured on 2026-10-25:
 
-| Feed | Links/outbounds seen | Usable after conversion |
-|---|---:|---:|
-| Barabama/FreeNodes `nodes/merged.txt` | 7,291 | 6,009 |
-| zengfr/free-vpn-subscribe (vmess) | 1,680 | 1,680 |
-| zengfr (trojan) | 487 | 485 |
-| zengfr (vless) | 186 | 186 |
-| zengfr (shadowsocks) | 171 | 171 |
-| snakem982/proxypool `source/v2ray-2.txt` | 61 | 58 |
-| awesome-vpn/awesome-vpn `all` | 37 | 37 |
-| freefq/free `v2` | 15 | 14 |
-| ripaojiedian/freenode `sub` | 13 | 13 |
-| Pawdroid/Free-servers `sub` | 10 | 9 |
-| **Total (all feeds)** | — | **8,662** |
+| Stage | Count |
+|---|---:|
+| links in `top100.txt` | 100 |
+| converted to supported outbounds | 97 |
+| unique outbounds after de-duplication | 71 |
+| accepted by `xray run -test` | 71 |
+| reachable through `opencode.ai/cdn-cgi/trace` | 62 |
+| unique exit IPs after de-duplication | 39 |
 
-The feed formats observed:
+So roughly 60% of the published "top" nodes survive all three checks on this
+host. The scraper never writes an exit that failed validation or the HTTPS
+probe. `zen-validate.sh` applies the same checks to the active config and prunes
+dead entries; it leaves the config untouched if nothing survives.
 
-- raw share links, one per line (`Barabama`);
-- one whole-body base64 subscription (`Pawdroid`, `snakem982`, `freefq`,
-  `awesome-vpn`);
-- one base64 blob per protocol, which decodes to many links (`zengfr`);
-- JSON arrays of complete Xray configs (`SpoonBoy` and similar).
-
-After conversion, Xray's own `-test` rejects malformed outbounds (roughly
-10–20% of a random sample in these runs; reality links missing `pbk` and
-Shadowsocks SIP003 plugin links are skipped by the converter outright). A
-throwaway Xray instance then probes every candidate through a per-candidate
-local inbound; in the sampled runs roughly 15–30% of validated nodes were
-reachable from this host. When probing is enabled, only reachable nodes are
-written to the final config. The funnel is why the relay's rotation and the
-plugin's retry matter: a large
-pool has enough fresh exits to make a 429 recoverable, while a single pinned
-exit usually does not.
+The funnel is why the relay's rotation and the plugin's retry matter: a pool of
+39 exits has enough fresh IPs to make a 429 recoverable, while a single pinned
+exit usually does not. When the retry budget is exhausted, the plugin calls the
+relay's `/refetch`; the relay runs `zen-refetch.sh` (fetch + validate + probe),
+writes a new config, and restarts Xray. A 10-minute cooldown prevents a
+refetch loop when the entire free tier is exhausted.

@@ -113,7 +113,7 @@ PY
 
 install_files() {
   mkdir -p "$BIN_DIR" "$CONFIG_DIR" "$STATE_DIR" "$OPENCODE_DIR/plugin"
-  for file in zen-relay.js zen-scrape.js zen-scrape.sh start-zen-proxy.sh start-zen-relay.sh zen-exit-check.sh zen-setup.sh zen-retry-plugin.js; do
+  for file in zen-relay.js zen-scrape.js zen-scrape.sh zen-validate.sh zen-refetch.sh start-zen-proxy.sh start-zen-relay.sh zen-exit-check.sh zen-setup.sh zen-retry-plugin.js; do
     [ -f "$REPO_DIR/bin/$file" ] || die "missing $REPO_DIR/bin/$file"
     install -m 0755 "$REPO_DIR/bin/$file" "$BIN_DIR/$file"
   done
@@ -160,6 +160,9 @@ Wants=zen-proxy.service
 [Service]
 Type=simple
 ExecStart="$need_node" "$BIN_DIR/zen-relay.js"
+Environment="NODE=$need_node"
+Environment="XRAY=$XRAY_BIN"
+Environment="OPENCODE_BIN=$OPENCODE_BIN"
 Environment=ZEN_PROXY_PORT=10901
 Environment=ZEN_RELAY_PORT=10900
 Environment=ZEN_RELAY_CONTROL_PORT=10902
@@ -212,8 +215,9 @@ need node
 need python3
 need curl
 need opencode
+OPENCODE_BIN=$(command -v opencode)
 say "node: $(command -v node)"
-say "opencode: $(command -v opencode)"
+say "opencode: $OPENCODE_BIN"
 
 XRAY_BIN=$(find_xray || true)
 if [ -z "$XRAY_BIN" ]; then

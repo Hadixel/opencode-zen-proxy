@@ -20,22 +20,30 @@
  *
  *   POST http://127.0.0.1:10902/rotate   retire every tunnel; idle ones close now
  *   POST http://127.0.0.1:10902/rotate?all=1  close every tunnel immediately
- *   GET  http://127.0.0.1:10902/status   current tunnel counts
+ *   POST http://127.0.0.1:10902/refetch  fetch/validate a fresh exit pool
+ *   GET  http://127.0.0.1:10902/status   current tunnel counts and refetch state
  *
  * Env:
- *   ZEN_RELAY_PORT          listen port                 (default 10900)
- *   ZEN_PROXY_PORT          upstream proxy port          (default 10901)
- *   ZEN_RELAY_CONTROL_PORT  local control HTTP port      (default 10902, 0=off)
- *   ZEN_RELAY_ROTATE_MS     retire age                   (default 180000)
- *   ZEN_RELAY_SOFT_IDLE_MS  quiet period for rotation     (default 15000)
- *   ZEN_RELAY_HARD_IDLE_MS  full-silence timeout          (default 300000)
- *   ZEN_RELAY_MAX_MS        absolute connection age       (default 900000)
- *   ZEN_RELAY_RETIRE_MS     quiet period after /rotate    (default 250)
+ *   ZEN_RELAY_PORT            listen port                 (default 10900)
+ *   ZEN_PROXY_PORT            upstream proxy port          (default 10901)
+ *   ZEN_RELAY_CONTROL_PORT    local control HTTP port      (default 10902, 0=off)
+ *   ZEN_RELAY_ROTATE_MS       retire age                   (default 180000)
+ *   ZEN_RELAY_SOFT_IDLE_MS    quiet period for rotation     (default 15000)
+ *   ZEN_RELAY_HARD_IDLE_MS    full-silence timeout          (default 300000)
+ *   ZEN_RELAY_MAX_MS          absolute connection age       (default 900000)
+ *   ZEN_RELAY_RETIRE_MS       quiet period after /rotate    (default 250)
+ *   ZEN_REFETCH_DISABLE       set to 1 to disable /refetch
+ *   ZEN_REFETCH_CMD           command to run                (default ./zen-refetch.sh)
+ *   ZEN_REFETCH_COOLDOWN_MS   minimum gap between refetches (default 600000)
  */
 'use strict';
 
 const net = require('node:net');
 const http = require('node:http');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
 
 const LISTEN_HOST = '127.0.0.1';
 const LISTEN_PORT = Number(process.env.ZEN_RELAY_PORT || 10900);
@@ -47,11 +55,18 @@ const SOFT_IDLE_MS = Number(process.env.ZEN_RELAY_SOFT_IDLE_MS || 15000);
 const HARD_IDLE_MS = Number(process.env.ZEN_RELAY_HARD_IDLE_MS || 300000);
 const MAX_MS = Number(process.env.ZEN_RELAY_MAX_MS || 900000);
 const RETIRE_MS = Number(process.env.ZEN_RELAY_RETIRE_MS || 250);
+const REFETCH_DISABLED = process.env.ZEN_REFETCH_DISABLE === '1';
+const REFETCH_COOLDOWN_MS = Number(process.env.ZEN_REFETCH_COOLDOWN_MS || 600000);
+const REFETCH_CMD = process.env.ZEN_REFETCH_CMD || path.join(__dirname, 'zen-refetch.sh');
+const CONFIG_PATH = process.env.ZEN_CONFIG || path.join(os.homedir(), '.config', 'zen-proxy', 'zen.json');
 const TICK_MS = 1000;
 
 const log = (...a) => console.log(new Date().toISOString(), '[zen-relay]', ...a);
 
 const connections = new Set();
+let refetching = false;
+let lastRefetch = 0;
+let lastRefetchResult = null;
 
 const server = net.createServer((client) => {
   const now = Date.now();
@@ -121,15 +136,87 @@ const control = http.createServer((req, res) => {
     send(200, rotate(all));
     return;
   }
+  if (req.method === 'POST' && url.pathname === '/refetch') {
+    const force = url.searchParams.get('force') === '1' || url.searchParams.get('force') === 'true';
+    const result = runRefetch(force);
+    send(result.started ? 202 : 200, result);
+    return;
+  }
   if (req.method === 'GET' && url.pathname === '/status') {
     const now = Date.now();
     let idle = 0;
     for (const conn of connections) if (now - conn.last > RETIRE_MS) idle++;
-    send(200, { active: connections.size, idle, upstream: `${UP_HOST}:${UP_PORT}` });
+    send(200, {
+      active: connections.size,
+      idle,
+      upstream: `${UP_HOST}:${UP_PORT}`,
+      refetching,
+      lastRefetch: lastRefetch ? new Date(lastRefetch).toISOString() : null,
+      lastRefetchResult,
+    });
     return;
   }
   send(404, { error: 'not found' });
 });
+/**
+ * Fetch and validate a fresh pool in the background, then let zen-refetch.sh
+ * restart Xray. The plugin calls this once its retry budget is exhausted, which
+ * is the signal that the current pool is all dead or rate-limited.
+ */
+const generatedConfig = () => {
+  try {
+    const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    return String(config['//'] || '').includes('zen-scrape');
+  } catch {
+    // A missing or broken config is exactly what refetch is for.
+    return true;
+  }
+};
+
+const runRefetch = (force = false) => {
+  if (REFETCH_DISABLED) return { started: false, reason: 'disabled' };
+  if (!force && !generatedConfig()) return { started: false, reason: 'custom-config' };
+  if (refetching) return { started: false, reason: 'running' };
+  const now = Date.now();
+  const wait = REFETCH_COOLDOWN_MS - (now - lastRefetch);
+  if (wait > 0) return { started: false, reason: 'cooldown', retryInMs: wait };
+
+  refetching = true;
+  lastRefetch = now;
+  lastRefetchResult = null;
+  log(`refetch started: ${REFETCH_CMD}`);
+  const child = spawn(REFETCH_CMD, [], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    // systemd's PATH may point at an old system node; use the runtime that
+    // started this relay for the refetch script and its child processes.
+    env: { ...process.env, NODE: process.execPath },
+  });
+  const relayOutput = (stream, level) => {
+    stream.setEncoding('utf8');
+    let buffered = '';
+    stream.on('data', (chunk) => {
+      buffered += chunk;
+      const lines = buffered.split('\n');
+      buffered = lines.pop() || '';
+      for (const line of lines) if (line.trim()) log(`refetch ${level}: ${line}`);
+    });
+  };
+  relayOutput(child.stdout, 'out');
+  relayOutput(child.stderr, 'err');
+  child.on('error', (error) => {
+    refetching = false;
+    lastRefetchResult = { ok: false, error: error.message, at: Date.now() };
+    log(`refetch failed to start: ${error.message}`);
+  });
+  child.on('close', (code) => {
+    refetching = false;
+    lastRefetchResult = { ok: code === 0, code, at: Date.now() };
+    log(`refetch finished with code ${code}`);
+    if (code === 0) rotate(false);
+  });
+  return { started: true };
+};
+
 control.on('error', (error) => log(`control error: ${error.message}`));
 control.unref?.();
 

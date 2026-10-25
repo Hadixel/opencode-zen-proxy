@@ -10,6 +10,7 @@
  *   zen-scrape.js                         fetch, probe, write ~/.config/zen-proxy/zen.json
  *   zen-scrape.js --no-test --limit 100   convert without probing (fast)
  *   zen-scrape.js --zen-check 5           also verify the first 5 live exits against Zen
+ *   zen-scrape.js --validate-only         recheck/prune the existing config, no fetch
  *   zen-scrape.js --dry-run --verbose     report what would be written
  *
  * Public nodes are shared and untrusted. Traffic through them is visible to
@@ -37,18 +38,12 @@ let TMP;
 const tmpDir = () => (TMP ??= fs.mkdtempSync(path.join(os.tmpdir(), "zen-scrape-")));
 const USER_AGENT = "zen-scrape/1.0 (+https://github.com/)";
 
-/** Feeds that publish raw share links or subscriptions and update frequently. */
+/** Default feed. Add more entries via ~/.config/zen-proxy/sources.json or --source. */
 const DEFAULT_SOURCES = [
-  { name: "Barabama/FreeNodes", url: "https://raw.githubusercontent.com/Barabama/FreeNodes/main/nodes/merged.txt" },
-  { name: "snakem982/proxypool", url: "https://raw.githubusercontent.com/snakem982/proxypool/main/source/v2ray-2.txt" },
-  { name: "Pawdroid/Free-servers", url: "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub" },
-  { name: "ripaojiedian/freenode", url: "https://raw.githubusercontent.com/ripaojiedian/freenode/main/sub" },
-  { name: "zengfr/vless", url: "https://raw.githubusercontent.com/zengfr/free-vpn-subscribe/main/vpn_sub_vless.txt" },
-  { name: "zengfr/trojan", url: "https://raw.githubusercontent.com/zengfr/free-vpn-subscribe/main/vpn_sub_trojan.txt" },
-  { name: "zengfr/vmess", url: "https://raw.githubusercontent.com/zengfr/free-vpn-subscribe/main/vpn_sub_vmess.txt" },
-  { name: "zengfr/ss", url: "https://raw.githubusercontent.com/zengfr/free-vpn-subscribe/main/vpn_sub_shadowsocks.txt" },
-  { name: "freefq/free", url: "https://raw.githubusercontent.com/freefq/free/master/v2" },
-  { name: "awesome-vpn/awesome-vpn", url: "https://raw.githubusercontent.com/awesome-vpn/awesome-vpn/master/all" },
+  {
+    name: "0xRadikal/Free-v2ray-Configs",
+    url: "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/top100.txt",
+  },
 ];
 
 const SCHEMES = ["vmess", "vless", "trojan", "ss", "ssr", "hysteria", "hysteria2", "hy2", "tuic", "anytls", "socks"];
@@ -63,6 +58,7 @@ const opt = {
   test: true,
   dryRun: false,
   refresh: false,
+  validateOnly: false,
   verbose: false,
   output: CONFIG_PATH,
   state: STATE_PATH,
@@ -85,6 +81,7 @@ const usage = () => {
   --sources <file>   JSON source list ({"sources":[{"name","url"}]})
   --source <url>     add one source URL (repeatable)
   --refresh          ignore the cached node list
+  --validate-only    validate/prune the existing config without fetching sources
   --dry-run          fetch/convert/report, do not write the config
   --verbose          per-source and per-probe details
   --output <path>    config path (default ${CONFIG_PATH})
@@ -108,6 +105,7 @@ for (let i = 0; i < argv.length; i++) {
     case "--zen-check": opt.zenCheck = nonNegative(value(), arg); break;
     case "--no-test": opt.test = false; break;
     case "--refresh": opt.refresh = true; break;
+    case "--validate-only": opt.validateOnly = true; break;
     case "--dry-run": opt.dryRun = true; break;
     case "--verbose": opt.verbose = true; break;
     case "--output": opt.output = value(); break;
@@ -617,10 +615,10 @@ async function fetchSource(source) {
       continue;
     }
     const item = parseLink(link);
-    if (item) parsed.push({ ...item, source: source.name });
+    if (item) parsed.push({ ...item, source: source.name, sourceUrl: source.url });
     else unsupported.set(`${scheme}-invalid`, (unsupported.get(`${scheme}-invalid`) || 0) + 1);
   }
-  for (const item of configs) parsed.push({ ...item, source: source.name });
+  for (const item of configs) parsed.push({ ...item, source: source.name, sourceUrl: source.url });
   debug(
     `${source.name}: ${links.length} links, ${configs.length} config outbounds, ` +
       `${parsed.length} usable (${Date.now() - started}ms)`,
@@ -635,11 +633,14 @@ async function fetchSource(source) {
 // State
 // ---------------------------------------------------------------------------
 
-function readState() {
+function readState(sourceUrls) {
   if (opt.refresh || !fs.existsSync(opt.state)) return [];
   try {
     const data = JSON.parse(fs.readFileSync(opt.state, "utf8"));
-    return Array.isArray(data.nodes) ? data.nodes.filter((node) => node?.key && node?.outbound) : [];
+    if (!Array.isArray(data.nodes)) return [];
+    return data.nodes.filter(
+      (node) => node?.key && node?.outbound && node?.sourceUrl && sourceUrls.has(node.sourceUrl),
+    );
   } catch {
     return [];
   }
@@ -937,7 +938,9 @@ function buildConfig(nodes) {
     "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10",
   ];
   return {
-    // Written by zen-scrape.js. Keep this file private: outbounds contain credentials.
+    // The relay uses this marker to avoid overwriting a hand-written config
+    // during automatic refetch. Remove it to opt out.
+    "//": "generated by zen-scrape.js - remove this line to disable automatic refetch",
     log: { loglevel: "warning" },
     dns: {
       servers: [
@@ -1001,6 +1004,7 @@ function nodeMetadata(nodes) {
       port: node.port,
       name: node.name,
       source: node.source,
+      sourceUrl: node.sourceUrl,
       outbound: node.outbound,
       lastOk: node.lastOk,
       lastCheck: node.lastCheck,
@@ -1012,10 +1016,114 @@ function nodeMetadata(nodes) {
 }
 
 // ---------------------------------------------------------------------------
+// Validation of an existing config
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-probe the active config and drop exits that no longer work. This is also
+ * the "validator" used by `zen-validate.sh` and by the refetch path: a node
+ * must pass Xray's parser and answer an HTTPS request through its outbound.
+ */
+async function validateExisting() {
+  if (!fs.existsSync(opt.output)) {
+    warn(`no config at ${opt.output}`);
+    return 1;
+  }
+  let current;
+  try {
+    current = JSON.parse(fs.readFileSync(opt.output, "utf8"));
+  } catch (error) {
+    warn(`invalid config at ${opt.output}: ${error.message}`);
+    return 1;
+  }
+  const xray = findXray();
+  if (!xray) {
+    warn("xray not found; set XRAY=/path/to/xray to validate a config");
+    return 1;
+  }
+
+  const selector = current.routing?.balancers?.find((balancer) => Array.isArray(balancer.selector))?.selector;
+  const wanted = new Set(selector || []);
+  const outbounds = (current.outbounds || []).filter(
+    (outbound) => SUPPORTED.has(outbound?.protocol) && (!selector || wanted.has(outbound.tag)),
+  );
+  if (!outbounds.length) {
+    warn("no supported outbounds found in the existing config");
+    return 1;
+  }
+
+  let oldState = [];
+  try {
+    if (fs.existsSync(opt.state)) oldState = JSON.parse(fs.readFileSync(opt.state, "utf8")).nodes || [];
+  } catch {}
+  const previous = new Map(oldState.filter((node) => node?.key).map((node) => [node.key, node]));
+
+  const seen = new Set();
+  let nodes = [];
+  for (const outbound of outbounds) {
+    const node = withName(outbound, outbound.tag || "");
+    if (!node || seen.has(node.key)) continue;
+    seen.add(node.key);
+    const old = previous.get(node.key);
+    nodes.push({
+      ...node,
+      source: old?.source || "validate-only",
+      sourceUrl: old?.sourceUrl || "",
+      lastOk: old?.lastOk,
+      exitIp: old?.exitIp,
+      zenOk: old?.zenOk,
+    });
+  }
+  log(`validating ${nodes.length} outbound(s) from ${opt.output}`);
+
+  nodes = await validateOutbounds(xray, nodes);
+  if (!nodes.length) {
+    warn("no outbound passed Xray validation; keeping the existing config");
+    return 1;
+  }
+  const basePort = await freePortFor(nodes.length);
+  nodes = await probeExits(xray, nodes, basePort);
+  const live = nodes.filter((node) => node.lastOk);
+  log(`probe: ${live.length}/${nodes.length} exit(s) reachable`);
+  if (!live.length) {
+    warn("no exit was reachable; keeping the existing config");
+    return 1;
+  }
+
+  const seenExit = new Set();
+  nodes = nodes.filter((node) => {
+    if (!node.lastOk || !node.exitIp) return true;
+    if (seenExit.has(node.exitIp)) return false;
+    seenExit.add(node.exitIp);
+    return true;
+  });
+  nodes = nodes.filter((node) => node.lastOk);
+  nodes.sort(
+    (a, b) =>
+      Number(Boolean(b.zenOk)) - Number(Boolean(a.zenOk)) ||
+      Number(Boolean(b.lastOk)) - Number(Boolean(a.lastOk)),
+  );
+  log(`kept ${nodes.length} healthy exit(s), ${seenExit.size} unique IP(s)`);
+
+  if (opt.dryRun) return 0;
+  const config = buildConfig(nodes);
+  const state = nodeMetadata(nodes);
+  const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+  const backup = `${opt.output}.bak.${stamp}`;
+  fs.copyFileSync(opt.output, backup);
+  try { fs.chmodSync(backup, 0o600); } catch {}
+  writeAtomic(opt.output, JSON.stringify(config, null, 2) + "\n");
+  writeAtomic(opt.state, JSON.stringify(state, null, 2) + "\n");
+  log(`updated ${opt.output} with ${nodes.length} healthy outbound(s)`);
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 async function main() {
+  if (opt.validateOnly) return validateExisting();
   fs.mkdirSync(path.dirname(opt.output), { recursive: true });
   fs.mkdirSync(tmpDir(), { recursive: true, mode: 0o700 });
 
@@ -1040,7 +1148,8 @@ async function main() {
   }
   log(`converted ${fresh.length} candidate(s)`);
 
-  const cached = readState();
+  const sourceUrls = new Set(sources.map((source) => source.url));
+  const cached = readState(sourceUrls);
   let nodes = mergeNodes(fresh, cached);
   if (!nodes.length) {
     warn("no usable nodes; keeping the existing config");
