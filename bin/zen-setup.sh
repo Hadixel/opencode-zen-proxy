@@ -13,7 +13,7 @@
 # own TLS, otherwise Zen rejects the request as "not from OpenCode".
 set -eu
 
-PROXY=""
+PROXY="${ZEN_PROXY:-http://127.0.0.1:10900}"
 NO_PROXY_VAL="${NO_PROXY_VAL:-localhost,127.0.0.1,::1}"
 PRINT=0
 CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
