@@ -21,7 +21,7 @@ CONFIG_DIR="${ZEN_CONFIG_DIR:-$HOME/.config/zen-proxy}"
 OPENCODE_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
 STATE_DIR="$HOME/.local/state/zen-proxy"
 LIMIT="${ZEN_SCRAPE_LIMIT:-150}"
-ZEN_CHECK="${ZEN_ZEN_CHECK:-5}"
+ZEN_CHECK="${ZEN_ZEN_CHECK:-0}"
 DO_SCRAPE=1
 DO_SERVICE=1
 DO_VERIFY=1
@@ -122,7 +122,7 @@ PY
 
 install_files() {
   mkdir -p "$BIN_DIR" "$CONFIG_DIR" "$STATE_DIR" "$OPENCODE_DIR/plugin"
-  for file in zen-relay.js zen-scrape.js zen-scrape.sh start-zen-proxy.sh start-zen-relay.sh zen-exit-check.sh zen-setup.sh zen-retry-plugin.js; do
+  for file in zen-relay.js zen-scrape.js zen-scrape.sh zen-validate.sh zen-refetch.sh zen-quota.sh start-zen-proxy.sh start-zen-relay.sh zen-exit-check.sh zen-setup.sh zen-retry-plugin.js; do
     [ -f "$REPO_DIR/bin/$file" ] || die "missing $REPO_DIR/bin/$file"
     install -m 0755 "$REPO_DIR/bin/$file" "$BIN_DIR/$file"
   done
@@ -169,6 +169,9 @@ Wants=zen-proxy.service
 [Service]
 Type=simple
 ExecStart="$need_node" "$BIN_DIR/zen-relay.js"
+Environment="NODE=$need_node"
+Environment="XRAY=$XRAY_BIN"
+Environment="OPENCODE_BIN=$OPENCODE_BIN"
 Environment=ZEN_PROXY_PORT=10901
 Environment=ZEN_RELAY_PORT=10900
 Environment=ZEN_RELAY_CONTROL_PORT=10902
@@ -220,7 +223,6 @@ say "repository: $REPO_DIR"
 need node
 need python3
 need curl
-
 OPENCODE_BIN=$(find_opencode || true)
 if [ -z "$OPENCODE_BIN" ]; then
   die "opencode executable not found; install OpenCode or set OPENCODE_BIN"
@@ -249,7 +251,7 @@ if [ "$DO_SCRAPE" = 1 ]; then
     say "scraping public node feeds (limit $LIMIT, Zen checks $ZEN_CHECK)"
     export ZEN_TARGET_OK="${ZEN_TARGET_OK:-3}"
     export ZEN_CHECK_CONCURRENCY="${ZEN_CHECK_CONCURRENCY:-6}"
-    if ! XRAY="$XRAY_BIN" OPENCODE_BIN="$OPENCODE_BIN" node "$BIN_DIR/zen-scrape.js" --limit "$LIMIT" --concurrency 24 --timeout 6 --zen-check "$ZEN_CHECK"; then
+    if ! XRAY="$XRAY_BIN" OPENCODE_BIN="$OPENCODE_BIN" node "$BIN_DIR/zen-scrape.js" --limit "$LIMIT" --concurrency 24 --timeout 6 --zen-only --zen-check "$ZEN_CHECK"; then
       [ -f "$CONFIG_DIR/zen.json" ] || cp "$REPO_DIR/config/zen-default.json" "$CONFIG_DIR/zen.json" 2>/dev/null || die "scrape failed and no config exists"
       warn "scrape failed; keeping the existing config"
     fi
