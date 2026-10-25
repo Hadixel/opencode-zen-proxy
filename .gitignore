@@ -1,6 +1,9 @@
 # Secrets and local state — never commit these
 *.local.json
 zen.json
+nodes.json
+sources.json
+*.bak.*
 .env
 .env.*
 *.pem

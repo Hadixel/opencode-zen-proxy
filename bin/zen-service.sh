@@ -24,6 +24,7 @@ stop_services() {
   echo "Stopping OpenCode Zen Proxy system..."
   fuser -k -9 10900/tcp 2>/dev/null || true
   fuser -k -9 10901/tcp 2>/dev/null || true
+  fuser -k -9 10902/tcp 2>/dev/null || true
   rm -f "$PID_FILE"
   sleep 0.5
   echo "Proxy services stopped."
@@ -38,6 +39,7 @@ start_services() {
   # Free any stale ports
   fuser -k -9 10900/tcp 2>/dev/null || true
   fuser -k -9 10901/tcp 2>/dev/null || true
+  fuser -k -9 10902/tcp 2>/dev/null || true
   sleep 0.5
 
   echo "Starting OpenCode Zen Proxy system in background..."

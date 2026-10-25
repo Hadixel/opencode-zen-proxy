@@ -1,0 +1,45 @@
+{
+  "//": "Copy to ~/.config/zen-proxy/sources.json to replace the built-in list.",
+  "sources": [
+    {
+      "name": "Barabama/FreeNodes",
+      "url": "https://raw.githubusercontent.com/Barabama/FreeNodes/main/nodes/merged.txt"
+    },
+    {
+      "name": "snakem982/proxypool",
+      "url": "https://raw.githubusercontent.com/snakem982/proxypool/main/source/v2ray-2.txt"
+    },
+    {
+      "name": "Pawdroid/Free-servers",
+      "url": "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub"
+    },
+    {
+      "name": "ripaojiedian/freenode",
+      "url": "https://raw.githubusercontent.com/ripaojiedian/freenode/main/sub"
+    },
+    {
+      "name": "zengfr/vless",
+      "url": "https://raw.githubusercontent.com/zengfr/free-vpn-subscribe/main/vpn_sub_vless.txt"
+    },
+    {
+      "name": "zengfr/trojan",
+      "url": "https://raw.githubusercontent.com/zengfr/free-vpn-subscribe/main/vpn_sub_trojan.txt"
+    },
+    {
+      "name": "zengfr/vmess",
+      "url": "https://raw.githubusercontent.com/zengfr/free-vpn-subscribe/main/vpn_sub_vmess.txt"
+    },
+    {
+      "name": "zengfr/ss",
+      "url": "https://raw.githubusercontent.com/zengfr/free-vpn-subscribe/main/vpn_sub_shadowsocks.txt"
+    },
+    {
+      "name": "freefq/free",
+      "url": "https://raw.githubusercontent.com/freefq/free/master/v2"
+    },
+    {
+      "name": "awesome-vpn/awesome-vpn",
+      "url": "https://raw.githubusercontent.com/awesome-vpn/awesome-vpn/master/all"
+    }
+  ]
+}

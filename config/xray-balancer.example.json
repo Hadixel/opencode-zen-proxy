@@ -112,15 +112,20 @@
     },
     {
       "tag": "dns-out",
-      "protocol": "dns"
+      "protocol": "dns",
+      "settings": {
+        "rules": [
+          {
+            "action": "hijack"
+          }
+        ]
+      }
     },
     {
       "tag": "direct",
       "protocol": "freedom",
-      "streamSettings": {
-        "sockopt": {
-          "domainStrategy": "UseIP"
-        }
+      "settings": {
+        "domainStrategy": "UseIP"
       }
     },
     {

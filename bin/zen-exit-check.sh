@@ -3,7 +3,6 @@
 #
 #   zen-exit-check.sh                          probe the configured proxy
 #   zen-exit-check.sh --proxy http://host:port probe a specific proxy
-#   zen-exit-check.sh --scrape                 scrape fresh public proxies & reload
 #   zen-exit-check.sh --sweep <dir>            test every Xray config in a dir
 #   zen-exit-check.sh --use <config.json>      switch the dedicated proxy
 #
@@ -14,63 +13,42 @@
 # Environment:
 #   ZEN_PROXY_PORT     port of the dedicated proxy (default 10900)
 #   ZEN_PROXY_CONFIG   config used by --use / start (default ~/.config/zen-proxy/zen.json)
-#   XRAY               xray binary (default: auto-detected)
+#   XRAY               xray binary (default: xray on PATH)
 #   XRAY_LOCATION_ASSET  dir with geoip.dat/geosite.dat if needed
 set -eu
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ZEN_PORT="${ZEN_PROXY_PORT:-10900}"
 ZEN_CFG="${ZEN_PROXY_CONFIG:-$HOME/.config/zen-proxy/zen.json}"
+if [ -z "${XRAY:-}" ]; then
+  if command -v xray >/dev/null 2>&1; then
+    XRAY_BIN=xray
+  elif [ -x "$HOME/.local/bin/xray" ]; then
+    XRAY_BIN="$HOME/.local/bin/xray"
+  elif [ -x "$HOME/.local/share/v2rayN/bin/xray/xray" ]; then
+    XRAY_BIN="$HOME/.local/share/v2rayN/bin/xray/xray"
+  else
+    XRAY_BIN=xray
+  fi
+else
+  XRAY_BIN="$XRAY"
+fi
 PROXY="http://127.0.0.1:$ZEN_PORT"
-
-# Auto-detect Xray binary
-XRAY_BIN="${XRAY:-}"
-if [ -z "$XRAY_BIN" ]; then
-  for candidate in "xray" "$HOME/.local/share/v2rayN/bin/xray/xray" "$HOME/.local/bin/xray" "/usr/local/bin/xray" "/usr/bin/xray"; do
-    if command -v "$candidate" >/dev/null 2>&1 || [ -x "$candidate" ]; then
-      XRAY_BIN="$candidate"
-      break
-    fi
-  done
-fi
-
-# Auto-detect location assets
-if [ -z "${XRAY_LOCATION_ASSET:-}" ]; then
-  for asset_candidate in "$HOME/.local/share/v2rayN/bin" "/usr/local/share/xray" "/usr/share/xray"; do
-    if [ -f "$asset_candidate/geosite.dat" ]; then
-      export XRAY_LOCATION_ASSET="$asset_candidate"
-      break
-    fi
-  done
-fi
 
 exit_ip() {
   curl -s --max-time 15 -x "$1" https://api.ipify.org 2>/dev/null || echo "unreachable"
 }
 
 probe() {
-  env HTTPS_PROXY="$1" HTTP_PROXY="$1" NO_PROXY=localhost,127.0.0.1,::1 NODE_TLS_REJECT_UNAUTHORIZED=0 \
+  env HTTPS_PROXY="$1" HTTP_PROXY="$1" NO_PROXY=localhost,127.0.0.1,::1 \
     timeout 60 opencode run --standalone --model opencode/big-pickle "say OK" 2>&1 \
     | tail -1 | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-60
 }
 
 case "${1:-}" in
-  --scrape)
-    MAX="${2:-30}"
-    echo "Scraping fresh public proxies from GitHub..."
-    node "$SCRIPT_DIR/zen-scrape.js" --max "$MAX" --output "$ZEN_CFG"
-    echo "Reloading proxy..."
-    P=$(ss -tlnp 2>/dev/null | sed -n "s/.*127.0.0.1:10901 .*pid=\([0-9]*\).*/\1/p" | head -1)
-    [ -n "$P" ] && kill "$P" 2>/dev/null; sleep 2
-    setsid nohup "$SCRIPT_DIR/start-zen-proxy.sh" >/dev/null 2>&1 &
-    sleep 3
-    echo "exit: $(exit_ip "$PROXY")"
-    echo "zen:  $(probe "$PROXY")"
-    ;;
-
   --sweep)
     DIR="${2:?usage: zen-exit-check.sh --sweep <dir-of-xray-configs>}"
     SPARE_PORT=$((ZEN_PORT + 1))
+    export XRAY_LOCATION_ASSET="${XRAY_LOCATION_ASSET:-}"
     for cfg in "$DIR"/*.json; do
       [ -f "$cfg" ] || continue
       remark=$(python3 -c "import json,sys
@@ -93,7 +71,8 @@ PYEOF
       if [ "$ip" = "unreachable" ]; then
         printf "%-34s %s\n" "$remark" "SKIP (xray failed)"
       else
-        res=$(probe "http://127.0.0.1:$SPARE_PORT")
+        # One config = one exit; retrying it through the plugin only wastes quota.
+        res=$(ZEN_RETRY_DISABLE=1 probe "http://127.0.0.1:$SPARE_PORT")
         printf "%-34s exit=%-18s zen=%s\n" "$remark" "$ip" "$(echo "$res" | cut -c1-20)"
       fi
       kill "$XPID" 2>/dev/null; sleep 1
@@ -119,9 +98,9 @@ for ib in c.get("inbounds", []):
 json.dump(c, open(sys.argv[2], "w"), indent=1)
 PYEOF
     fi
-    P=$(ss -tlnp 2>/dev/null | sed -n "s/.*127.0.0.1:10901 .*pid=\([0-9]*\).*/\1/p" | head -1)
+    P=$(ss -tlnp 2>/dev/null | sed -n "s/.*127.0.0.1:${ZEN_PORT} .*pid=\([0-9]*\).*/\1/p" | head -1)
     [ -n "$P" ] && kill "$P" 2>/dev/null; sleep 2
-    setsid nohup "$SCRIPT_DIR/start-zen-proxy.sh" >/dev/null 2>&1 &
+    setsid nohup "$HOME/.local/bin/start-zen-proxy.sh" >/dev/null 2>&1 &
     sleep 4
     echo "switched to: $(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('remarks','?'))" "$ZEN_CFG" 2>/dev/null || echo '?')"
     echo "exit: $(exit_ip "$PROXY")"
@@ -138,9 +117,7 @@ PYEOF
     echo "exit: $(exit_ip "$PROXY")"
     echo "zen:  $(probe "$PROXY")"
     echo
-    echo "options:"
-    echo "  zen-exit-check.sh --scrape [count]     fetch fresh public proxies and reload"
-    echo "  zen-exit-check.sh --sweep <dir>        test every Xray config in a dir"
-    echo "  zen-exit-check.sh --use <file|id>      switch to a specific config"
+    echo "if it says 'Free usage limit reached', the exit IP is spent; try"
+    echo "  zen-exit-check.sh --sweep <dir-of-xray-configs>"
     ;;
 esac

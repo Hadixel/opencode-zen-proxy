@@ -4,48 +4,37 @@
 #
 #   ZEN_PROXY_CONFIG=~/.config/zen-proxy/zen.json ./start-zen-proxy.sh
 #
+# The config's local inbound port is rewritten to ZEN_PROXY_PORT, so the same
+# config can be launched anywhere. The instance's DNS inbound, if present, is
+# moved to port+53.
+#
 # Environment:
 #   ZEN_PROXY_PORT       listen port (default 10901)
 #   ZEN_PROXY_CONFIG     Xray config to run (default ~/.config/zen-proxy/zen.json)
-#   XRAY                 xray binary (default: auto-detected)
-#   XRAY_LOCATION_ASSET  dir containing geoip.dat/geosite.dat
+#   XRAY                 xray binary (default: xray on PATH)
+#   XRAY_LOCATION_ASSET  dir containing geoip.dat/geosite.dat (needed by configs
+#                        that use geosite:/geoip: routing rules)
 set -eu
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -z "${XRAY:-}" ]; then
+  if command -v xray >/dev/null 2>&1; then
+    XRAY=xray
+  elif [ -x "$HOME/.local/bin/xray" ]; then
+    XRAY="$HOME/.local/bin/xray"
+  elif [ -x "$HOME/.local/share/v2rayN/bin/xray/xray" ]; then
+    XRAY="$HOME/.local/share/v2rayN/bin/xray/xray"
+  else
+    XRAY=xray
+  fi
+fi
 CONFIG="${ZEN_PROXY_CONFIG:-$HOME/.config/zen-proxy/zen.json}"
 PORT="${ZEN_PROXY_PORT:-10901}"
 
-# Auto-detect Xray binary
-XRAY_BIN="${XRAY:-}"
-if [ -z "$XRAY_BIN" ]; then
-  for candidate in "xray" "$HOME/.local/share/v2rayN/bin/xray/xray" "$HOME/.local/bin/xray" "/usr/local/bin/xray" "/usr/bin/xray"; do
-    if command -v "$candidate" >/dev/null 2>&1 || [ -x "$candidate" ]; then
-      XRAY_BIN="$candidate"
-      break
-    fi
-  done
-fi
-
-[ -n "$XRAY_BIN" ] || {
-  echo "error: xray binary not found. Install xray or set XRAY=/path/to/xray" >&2
+[ -f "$CONFIG" ] || {
+  echo "no config at $CONFIG" >&2
+  echo "copy config/xray-balancer.example.json there and add your servers" >&2
   exit 1
 }
-
-# Auto-detect location assets if not set
-if [ -z "${XRAY_LOCATION_ASSET:-}" ]; then
-  for asset_candidate in "$HOME/.local/share/v2rayN/bin" "/usr/local/share/xray" "/usr/share/xray"; do
-    if [ -f "$asset_candidate/geosite.dat" ]; then
-      export XRAY_LOCATION_ASSET="$asset_candidate"
-      break
-    fi
-  done
-fi
-
-# Auto-scrape if config is missing
-if [ ! -f "$CONFIG" ]; then
-  echo "no config at $CONFIG; automatically scraping public nodes..."
-  node "$SCRIPT_DIR/zen-scrape.js" --max 30 --output "$CONFIG"
-fi
 
 python3 - "$CONFIG" "$PORT" <<'EOF'
 import json, sys
@@ -59,9 +48,7 @@ for ib in c.get("inbounds", []):
 json.dump(c, open(cfg, "w"), indent=1)
 EOF
 
-# Free port if already in use
 fuser -k -9 "$PORT/tcp" 2>/dev/null || true
 sleep 0.5
-
-echo "zen-proxy: $CONFIG -> 127.0.0.1:$PORT using $XRAY_BIN"
-exec "$XRAY_BIN" run -c "$CONFIG"
+echo "zen-proxy: $CONFIG -> 127.0.0.1:$PORT"
+exec "$XRAY" run -c "$CONFIG"

@@ -2,8 +2,9 @@
 Type=Application
 Name=zen-proxy
 Comment=Dedicated Xray instance for OpenCode Zen traffic
-# Adjust the path to where you installed xray and this config.
-Exec=/path/to/xray run -c /path/to/opencode-zen-proxy/config/xray-balancer.example.json
+# zen-install.sh writes a copy of this file for your install. For a manual
+# install, keep the script in ~/.local/bin (or adjust the path).
+Exec=sh -c 'exec "$HOME/.local/bin/start-zen-proxy.sh"'
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
