@@ -878,46 +878,61 @@ async function checkZen(nodes, liveIndexes) {
   const opencode = process.env.OPENCODE_BIN || "opencode";
   const checkModel = process.env.ZEN_CHECK_MODEL || "opencode/deepseek-v4.1-flash-free";
   const targetZenOk = Number(process.env.ZEN_TARGET_OK || 5);
-  warn(`checking up to ${Math.min(opt.zenCheck, liveIndexes.length)} exit(s) against Zen (${checkModel}) for ${targetZenOk} working exits`);
-  const selected = liveIndexes.slice(0, opt.zenCheck);
+  const concurrency = Number(process.env.ZEN_CHECK_CONCURRENCY || 4);
+  const maxToCheck = Math.min(opt.zenCheck, liveIndexes.length);
+  warn(`checking up to ${maxToCheck} exit(s) against Zen (${checkModel}) with concurrency ${concurrency} (target: ${targetZenOk} working exits)`);
+  
+  let nextIdx = 0;
   let foundOk = 0;
-  for (const i of selected) {
-    if (foundOk >= targetZenOk) break;
-    const node = nodes[i];
-    const port = node.__probePort;
-    const env = {
-      ...process.env,
-      HTTPS_PROXY: `http://127.0.0.1:${port}`,
-      HTTP_PROXY: `http://127.0.0.1:${port}`,
-      ALL_PROXY: "",
-      all_proxy: "",
-      NO_PROXY: "localhost,127.0.0.1,::1",
-      ZEN_RETRY_DISABLE: "1",
-    };
-    const result = await new Promise((resolve) => {
-      const child = spawn(opencode, ["run", "--standalone", "--model", checkModel, "say OK"], {
-        cwd: os.tmpdir(),
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
+  
+  const worker = async () => {
+    while (nextIdx < maxToCheck && foundOk < targetZenOk) {
+      const idx = nextIdx++;
+      const nodeIndex = liveIndexes[idx];
+      const node = nodes[nodeIndex];
+      const port = node.__probePort;
+      const env = {
+        ...process.env,
+        HTTPS_PROXY: `http://127.0.0.1:${port}`,
+        HTTP_PROXY: `http://127.0.0.1:${port}`,
+        ALL_PROXY: "",
+        all_proxy: "",
+        NO_PROXY: "localhost,127.0.0.1,::1",
+        ZEN_RETRY_DISABLE: "1",
+      };
+      
+      const result = await new Promise((resolve) => {
+        const child = spawn(opencode, ["run", "--standalone", "--model", checkModel, "say OK"], {
+          cwd: os.tmpdir(),
+          env,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let out = "";
+        let err = "";
+        child.stdout.on("data", (d) => { out += d.toString(); });
+        child.stderr.on("data", (d) => { err += d.toString(); });
+        const timer = setTimeout(() => { child.kill("SIGKILL"); resolve({ ok: false, text: "timeout" }); }, 20000);
+        child.on("error", (error) => { clearTimeout(timer); resolve({ ok: false, text: error.message }); });
+        child.on("close", () => {
+          clearTimeout(timer);
+          const text = `${out}\n${err}`;
+          const ok = /\bOK\b/.test(out) && !/FreeUsageLimit|FreeTierError|free usage limit/i.test(text);
+          resolve({ ok, text: text.slice(-400) });
+        });
       });
-      let out = "";
-      let err = "";
-      child.stdout.on("data", (d) => { out += d.toString(); });
-      child.stderr.on("data", (d) => { err += d.toString(); });
-      const timer = setTimeout(() => { child.kill("SIGKILL"); resolve({ ok: false, text: "timeout" }); }, 25000);
-      child.on("error", (error) => { clearTimeout(timer); resolve({ ok: false, text: error.message }); });
-      child.on("close", () => {
-        clearTimeout(timer);
-        const text = `${out}\n${err}`;
-        const ok = /\bOK\b/.test(out) && !/FreeUsageLimit|FreeTierError|free usage limit/i.test(text);
-        resolve({ ok, text: text.slice(-400) });
-      });
-    });
-    node.zenOk = result.ok;
-    node.zenChecked = Date.now();
-    warn(`zen check [${node.protocol}] ${node.host}:${node.port} -> ${result.ok ? "SUCCESS (OK)" : "FAIL"}`);
-    if (result.ok) foundOk++;
-  }
+
+      node.zenOk = result.ok;
+      node.zenChecked = Date.now();
+      warn(`zen check [${node.protocol}] ${node.host}:${node.port} -> ${result.ok ? "SUCCESS (OK)" : "FAIL"}`);
+      if (result.ok) {
+        foundOk++;
+        warn(`>>> Found working Zen exit (${foundOk}/${targetZenOk}): [${node.protocol}] ${node.host}:${node.port} <<<`);
+      }
+    }
+  };
+
+  const pool = Array.from({ length: Math.min(concurrency, maxToCheck) }, () => worker());
+  await Promise.all(pool);
   return nodes;
 }
 

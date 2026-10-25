@@ -104,8 +104,8 @@ status_services() {
 }
 
 scrape_proxies() {
-  echo "Re-scraping live public proxies..."
-  node "$SCRIPT_DIR/zen-scrape.js" --max 35 --output "$ZEN_DIR/zen.json"
+  echo "Re-scraping live public proxies and validating Zen free quota..."
+  node "$SCRIPT_DIR/zen-scrape.js" --zen-check 60 --limit 150 --concurrency 20 --output "$ZEN_DIR/zen.json"
   echo "Restarting services with fresh proxy pool..."
   stop_services
   start_services
