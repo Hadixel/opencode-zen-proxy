@@ -59,5 +59,13 @@ for ib in c.get("inbounds", []):
 json.dump(c, open(cfg, "w"), indent=1)
 EOF
 
+# If port is already in use, kill the old process
+P=$(ss -tlnp "sport = :$PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1)
+if [ -n "$P" ]; then
+  echo "killing previous zen-proxy process (PID $P)..."
+  kill "$P" 2>/dev/null || true
+  sleep 1
+fi
+
 echo "zen-proxy: $CONFIG -> 127.0.0.1:$PORT using $XRAY_BIN"
 exec "$XRAY_BIN" run -c "$CONFIG"
