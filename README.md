@@ -63,31 +63,37 @@ OpenCode ──HTTPS_PROXY──▶ zen-relay ────┘
 - `config/sources.example.json` lists the default public feeds; `bin/zen-scrape.sh`
   has the same list built in and can read `~/.config/zen-proxy/sources.json`.
 
-## Quick start (one command)
+## Setup Guide
+
+Choose your operating system below for quick setup instructions:
+
+---
+
+### 🐧 Linux Setup
+
+#### Prerequisites
+- Node.js 18+ (`node -v`)
+- Python 3 (`python3 --version`)
+- `curl`
+- OpenCode v2.1+ (`opencode --version`)  
+*(Xray is detected automatically or downloaded by the installer if missing).*
+
+#### Quick Install (One Command)
 
 ```bash
-git clone <this repo> opencode-zen-proxy
+git clone https://github.com/Hadixel/opencode-zen-proxy.git
 cd opencode-zen-proxy
 ./bin/zen-install.sh
 ```
 
-Requires Node.js 18+, Python 3, `curl`, and OpenCode (Xray is found or
-downloaded automatically).
-
-That's it. The installer:
-
-1. copies the scripts to `~/.local/bin` and the plugin to
-   `~/.config/opencode/plugin/`;
-2. finds Xray (or downloads the latest official Linux build to
-   `~/.local/share/zen-proxy/` and links it as `~/.local/bin/xray`);
-3. scrapes and probes public exits into `~/.config/zen-proxy/zen.json`;
-4. writes `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` into OpenCode's
-   `service.json` and restarts the OpenCode service;
-5. starts `zen-proxy` and `zen-relay` as systemd user services, or adds
-   autostart entries on systems without systemd.
+The installer:
+1. Detects or downloads Xray into `~/.local/share/zen-proxy/` and links it to `~/.local/bin/xray`.
+2. Scrapes and validates working public exit nodes directly against Zen into `~/.config/zen-proxy/zen.json`.
+3. Installs the automatic retry plugin into `~/.config/opencode/plugin/zen-retry.js`.
+4. Writes `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` into OpenCode's `service.json`.
+5. Starts both Xray (10901) and `zen-relay` (10900) in the background.
 
 Useful install flags:
-
 ```bash
 ./bin/zen-install.sh --refresh            # re-scrape even if a config exists
 ./bin/zen-install.sh --limit 200          # more candidate exits (slower)
@@ -97,11 +103,50 @@ Useful install flags:
 ./bin/zen-install.sh --no-restart         # install/start proxy, leave OpenCode running
 ```
 
-## Windows Quick Start (PowerShell)
+#### Service Management on Linux
 
-Requirements: Windows 10/11, PowerShell 5.1+ (or PowerShell 7+), and Node.js 18+. Xray for Windows is detected or downloaded automatically.
+```bash
+./bin/zen-service.sh status     # Check status and recent relay logs
+./bin/zen-service.sh restart    # Restart proxy and relay services
+./bin/zen-service.sh stop       # Stop background services cleanly
+./bin/zen-service.sh start      # Start background services
+./bin/zen-service.sh scrape     # Re-scrape and validate fresh exits
+./bin/zen-exit-check.sh         # Test active exit against Zen free tier
+./run.sh                        # Run interactively in the foreground (Ctrl+C stops)
+```
 
-Clone and run the installer:
+#### Manual Setup with Your Own VPS / Private Config on Linux
+
+```bash
+# Switch active proxy to your own Xray/V2Ray config:
+./bin/zen-exit-check.sh --use /path/to/your-config.json
+
+# Or configure OpenCode manually:
+./bin/zen-setup.sh --proxy http://127.0.0.1:10900
+opencode service restart
+./bin/zen-service.sh restart
+```
+
+---
+
+### 🪟 Windows Setup (PowerShell)
+
+#### Prerequisites
+- Windows 10 or 11
+- PowerShell 5.1+ (built-in Windows PowerShell) or PowerShell 7+ (`pwsh`)
+- Node.js 18+ (download from [nodejs.org](https://nodejs.org) or install via `winget install OpenJS.NodeJS.LTS`)
+- OpenCode v2.1+  
+*(Xray for Windows is automatically downloaded and extracted if not found).*
+
+#### Quick Install (One Command)
+
+Open PowerShell (as your normal user) and run the one-line web installer:
+
+```powershell
+irm https://raw.githubusercontent.com/Hadixel/opencode-zen-proxy/main/bin/zen-install.ps1 | iex
+```
+
+Or clone and run locally:
 
 ```powershell
 git clone https://github.com/Hadixel/opencode-zen-proxy.git
@@ -109,23 +154,47 @@ cd opencode-zen-proxy
 .\bin\zen-install.ps1
 ```
 
-Or run directly via one-line installer:
+The installer:
+1. Verifies Node.js is present.
+2. Downloads official 64-bit Windows Xray release (`Xray-windows-64.zip`) into `$HOME\.local\share\zen-proxy\` if missing.
+3. Installs the retry plugin into `$HOME\.config\opencode\plugin\zen-retry.js`.
+4. Configures OpenCode's `$HOME\.config\opencode\service.json` with the proxy settings.
+5. Scrapes and validates working exits directly against Zen into `$HOME\.config\zen-proxy\zen.json`.
+6. Starts Xray (10901) and `zen-relay` (10900) in the background.
+
+#### Service Management on Windows
 
 ```powershell
-irm https://raw.githubusercontent.com/Hadixel/opencode-zen-proxy/main/bin/zen-install.ps1 | iex
+.\bin\zen-service.ps1 status    # Check status and recent relay logs
+.\bin\zen-service.ps1 restart   # Restart proxy and relay services
+.\bin\zen-service.ps1 stop      # Stop background services cleanly
+.\bin\zen-service.ps1 start     # Start background services
+.\bin\zen-service.ps1 scrape    # Re-scrape and validate fresh exits
+.\bin\zen-exit-check.ps1        # Test active exit against Zen free tier
+.\run.ps1                       # One-click interactive foreground runner (Ctrl+C stops)
 ```
 
-### Windows Service Commands
+#### Manual Setup with Your Own VPS or v2rayN on Windows
 
 ```powershell
-.\bin\zen-service.ps1 start       # Start Xray and zen-relay in background
-.\bin\zen-service.ps1 stop        # Stop proxy services cleanly
-.\bin\zen-service.ps1 restart     # Restart both services
-.\bin\zen-service.ps1 status      # Check ports and recent relay logs
-.\bin\zen-service.ps1 scrape      # Re-scrape and validate free-tier exits
-.\bin\zen-exit-check.ps1          # Verify current exit against OpenCode Zen
-.\run.ps1                         # One-click interactive foreground runner
+# Switch active proxy to your own config:
+.\bin\zen-exit-check.ps1 -Use "C:\path\to\your-config.json"
+
+# Or sweep a directory of v2rayN configs to find which ones work with Zen:
+.\bin\zen-exit-check.ps1 -Sweep "$env:APPDATA\v2rayN\guiConfigs"
 ```
+
+---
+
+### 🧪 Verify Your Setup (Linux & Windows)
+
+Test that OpenCode answers free-tier queries through the proxy:
+
+```bash
+opencode run --model opencode/deepseek-v4.1-flash-free "Hello! Reply with SUCCESS."
+```
+
+---
 
 > **Public nodes are shared and untrusted.** Their operators can observe the
 > traffic that passes through them. Do not use them for credentials, private
