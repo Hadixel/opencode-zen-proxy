@@ -10,12 +10,8 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PORT="${ZEN_RELAY_PORT:-10900}"
 
-# If port is already in use, kill the old process
-P=$(ss -tlnp "sport = :$PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1)
-if [ -n "$P" ]; then
-  echo "killing previous zen-relay process (PID $P)..."
-  kill "$P" 2>/dev/null || true
-  sleep 1
-fi
+# Free port if already in use
+fuser -k -9 "$PORT/tcp" 2>/dev/null || true
+sleep 0.5
 
 exec node "$SCRIPT_DIR/zen-relay.js"

@@ -16,17 +16,17 @@ cleanup() {
   if [ -n "${XPID:-}" ]; then
     kill "$XPID" 2>/dev/null || true
   fi
-  fuser -k 10900/tcp 2>/dev/null || true
-  fuser -k 10901/tcp 2>/dev/null || true
+  fuser -k -9 10900/tcp 2>/dev/null || true
+  fuser -k -9 10901/tcp 2>/dev/null || true
   exit 0
 }
 
 trap cleanup INT TERM EXIT
 
 # Free ports if occupied
-fuser -k 10900/tcp 2>/dev/null || true
-fuser -k 10901/tcp 2>/dev/null || true
-sleep 1
+fuser -k -9 10900/tcp 2>/dev/null || true
+fuser -k -9 10901/tcp 2>/dev/null || true
+sleep 0.5
 
 echo "=== Starting OpenCode Zen Proxy System ==="
 

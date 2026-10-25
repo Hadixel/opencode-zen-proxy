@@ -33,10 +33,19 @@ This automatically:
 - Generates interception certificates for `opencode.ai`.
 - Configures OpenCode's service environment (`service.json`).
 
-### 2. Start the Proxy and Relay
+### 2. Start the Proxy
+Run in the foreground (single terminal):
 ```bash
-./bin/start-zen-proxy.sh &    # Xray balancer on 127.0.0.1:10901
-./bin/start-zen-relay.sh &    # Smart relay on 127.0.0.1:10900
+./run.sh
+```
+
+Or run as a background service:
+```bash
+./bin/zen-service.sh start
+```
+
+Then restart OpenCode service:
+```bash
 opencode service restart
 ```
 

@@ -34,6 +34,8 @@ const LISTEN_PORT = Number(process.env.ZEN_RELAY_PORT || 10900);
 const UP_HOST = '127.0.0.1';
 const UP_PORT = Number(process.env.ZEN_PROXY_PORT || 10901);
 const MAX_RETRIES = Number(process.env.ZEN_MAX_RETRIES || 15);
+const CONNECT_TIMEOUT_MS = Number(process.env.ZEN_CONNECT_TIMEOUT_MS || 4500);
+const HANDSHAKE_TIMEOUT_MS = Number(process.env.ZEN_HANDSHAKE_TIMEOUT_MS || 4500);
 const ROTATE_MS = Number(process.env.ZEN_RELAY_ROTATE_MS || 180000);
 const SOFT_IDLE_MS = Number(process.env.ZEN_RELAY_SOFT_IDLE_MS || 15000);
 const HARD_IDLE_MS = Number(process.env.ZEN_RELAY_HARD_IDLE_MS || 300000);
@@ -88,7 +90,11 @@ const interceptor = http2.createSecureServer({
   for await (const chunk of req) chunks.push(Buffer.from(chunk));
   const bodyBuf = Buffer.concat(chunks);
 
-  log(`-> Client request: ${reqMethod} ${reqPath} (${bodyBuf.length} bytes)`);
+  const targetHost = req.headers[':authority'] || req.headers['host'] || 'opencode.ai';
+  const targetServerName = targetHost.replace(/:.*/, '');
+  const targetPort = targetHost.includes(':') ? targetHost.split(':')[1] : '443';
+
+  log(`-> Client request: ${reqMethod} https://${targetHost}${reqPath} (${bodyBuf.length} bytes)`);
 
   function attemptUpstream(attempt) {
     let settled = false;
@@ -118,9 +124,9 @@ const interceptor = http2.createSecureServer({
       host: UP_HOST,
       port: UP_PORT,
       method: 'CONNECT',
-      path: 'opencode.ai:443',
-      headers: { Host: 'opencode.ai:443' },
-      timeout: 15000
+      path: `${targetServerName}:${targetPort}`,
+      headers: { Host: `${targetServerName}:${targetPort}` },
+      timeout: CONNECT_TIMEOUT_MS
     });
 
     connectReq.on('timeout', () => {
@@ -139,15 +145,15 @@ const interceptor = http2.createSecureServer({
         return;
       }
 
-      socket.setTimeout(6500);
+      socket.setTimeout(HANDSHAKE_TIMEOUT_MS);
       socket.on('timeout', () => {
         socket.destroy();
-        retry('Upstream handshake timeout (6.5s)');
+        retry(`Upstream handshake timeout (${HANDSHAKE_TIMEOUT_MS}ms)`);
       });
 
       const tlsSocket = tls.connect({
         socket,
-        servername: 'opencode.ai',
+        servername: targetServerName,
         ALPNProtocols: ['h2', 'http/1.1']
       });
 
@@ -162,7 +168,7 @@ const interceptor = http2.createSecureServer({
 
         if (alpn === 'h2') {
           // HTTP/2 protocol
-          const h2Client = http2.connect('https://opencode.ai', {
+          const h2Client = http2.connect(`https://${targetServerName}:${targetPort}`, {
             createConnection: () => tlsSocket
           });
 
@@ -173,6 +179,7 @@ const interceptor = http2.createSecureServer({
           const h2Headers = {
             ':method': reqMethod,
             ':path': reqPath,
+            ':authority': targetHost,
             ...Object.fromEntries(
               Object.entries(req.headers).filter(([k]) =>
                 !k.startsWith(':') &&
@@ -224,13 +231,14 @@ const interceptor = http2.createSecureServer({
         } else {
           // HTTP/1.1 fallback
           const h1Req = https.request({
-            host: 'opencode.ai',
+            host: targetServerName,
+            port: Number(targetPort),
             path: reqPath,
             method: reqMethod,
             createConnection: () => tlsSocket,
             headers: {
               ...req.headers,
-              host: 'opencode.ai',
+              host: targetHost,
               'content-length': bodyBuf.length
             }
           }, (h1Res) => {
@@ -276,10 +284,16 @@ const rawConnections = new Set();
 const server = http.createServer();
 
 server.on('connect', (req, clientSocket, head) => {
-  const target = req.url || '';
-  const isOpencodeAi = target.startsWith('opencode.ai') || target.includes('.opencode.ai');
+  if (head && head.length > 0) {
+    clientSocket.unshift(head);
+  }
 
-  if (isOpencodeAi) {
+  const target = req.url || '';
+  // Intercept opencode.ai API endpoints for 403/429 failover, but let models.opencode.ai pass through
+  const isOpencodeZen = (/opencode\.ai/i.test(target) || /zenmux\.ai/i.test(target)) &&
+                        !/models\.opencode\.ai/i.test(target);
+
+  if (isOpencodeZen) {
     // Intercept opencode.ai to provide 403/429 failover
     clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
     interceptor.emit('connection', clientSocket);
@@ -357,10 +371,22 @@ server.on('request', (req, res) => {
   }
 });
 
+let reclaimingPort = false;
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
-    log(`Error: Port ${LISTEN_PORT} is already in use by another process.`);
-    log(`Run: fuser -k ${LISTEN_PORT}/tcp to free it.`);
+    if (!reclaimingPort) {
+      reclaimingPort = true;
+      log(`Port ${LISTEN_PORT} is already in use. Force-reclaiming port ${LISTEN_PORT}...`);
+      try {
+        execFileSync('fuser', ['-k', '-9', `${LISTEN_PORT}/tcp`], { stdio: 'ignore' });
+      } catch (_) {}
+      setTimeout(() => {
+        reclaimingPort = false;
+        server.listen(LISTEN_PORT, LISTEN_HOST);
+      }, 800);
+      return;
+    }
+    log(`Error: Port ${LISTEN_PORT} is still in use after reclamation.`);
     process.exit(1);
   } else {
     log('Server error:', err.message);

@@ -287,7 +287,12 @@ function buildXrayConfig(outbounds) {
           tag: "zenbal",
           selector: outboundTags,
           strategy: {
-            type: "roundRobin"
+            type: "leastLoad",
+            settings: {
+              expected: 2,
+              maxRTT: "5s",
+              tolerance: 0.5
+            }
           }
         }
       ],
@@ -298,6 +303,16 @@ function buildXrayConfig(outbounds) {
           balancerTag: "zenbal"
         }
       ]
+    },
+    burstObservatory: {
+      subjectSelector: outboundTags,
+      pingConfig: {
+        destination: "https://connectivitycheck.gstatic.com/generate_204",
+        httpMethod: "HEAD",
+        interval: "2m",
+        sampling: 1,
+        timeout: "4s"
+      }
     }
   };
 }
@@ -361,7 +376,7 @@ async function main() {
           const content = JSON.parse(fs.readFileSync(path.join(localGuiDir, f), 'utf8'));
           const outbounds = content.outbounds || [];
           for (const ob of outbounds) {
-            if (['vless', 'vmess', 'trojan', 'shadowsocks'].includes(ob.protocol)) {
+            if (['vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria'].includes(ob.protocol)) {
               if (ob.protocol === 'vless') {
                 const sec = ob.streamSettings?.security;
                 if (sec !== 'tls' && sec !== 'reality') continue;
@@ -374,6 +389,9 @@ async function main() {
               } else if (ob.settings?.servers?.[0]) {
                 addr = ob.settings.servers[0].address;
                 port = ob.settings.servers[0].port;
+              } else if (ob.settings?.address && ob.settings?.port) {
+                addr = ob.settings.address;
+                port = ob.settings.port;
               }
               if (addr && port) {
                 const ep = `${addr}:${port}`;

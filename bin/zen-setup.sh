@@ -121,9 +121,11 @@ cat <<'EOM'
 
 Setup completed successfully!
 
-To start the proxy system:
-  ./bin/start-zen-proxy.sh &
-  ./bin/start-zen-relay.sh &
+To run in the foreground:
+  ./run.sh
+
+Or run in the background (daemon):
+  ./bin/zen-service.sh start
 
 Then restart OpenCode service:
   opencode service restart
