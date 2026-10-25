@@ -19,7 +19,7 @@ PRINT=0
 CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
 
 usage() {
-  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -61,6 +61,21 @@ with open(cfg, "w") as fh:
 print("updated", cfg)
 print(json.dumps(env, indent=2))
 EOF
+
+# Install the retry plugin when this script ships next to it. The plugin is what
+# turns a 403/429 into a relay rotation + retry; the proxy itself only sees TLS.
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PLUGIN_SRC="$SELF_DIR/zen-retry-plugin.js"
+if [ -f "$PLUGIN_SRC" ]; then
+  PLUGIN_DIR="$CONFIG_DIR/plugin"
+  mkdir -p "$PLUGIN_DIR"
+  if [ -f "$PLUGIN_DIR/zen-retry.js" ] && ! cmp -s "$PLUGIN_SRC" "$PLUGIN_DIR/zen-retry.js"; then
+    cp "$PLUGIN_DIR/zen-retry.js" "$PLUGIN_DIR/zen-retry.js.bak.$(date +%Y%m%d-%H%M%S)"
+  fi
+  cp "$PLUGIN_SRC" "$PLUGIN_DIR/zen-retry.js"
+  chmod 0644 "$PLUGIN_DIR/zen-retry.js"
+  echo "installed retry plugin: $PLUGIN_DIR/zen-retry.js"
+fi
 
 cat <<'EOM'
 

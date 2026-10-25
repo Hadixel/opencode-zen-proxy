@@ -112,19 +112,20 @@
     },
     {
       "tag": "dns-out",
-      "protocol": "dokodemo-door",
+      "protocol": "dns",
       "settings": {
-        "address": "8.8.8.8",
-        "port": 53
+        "rules": [
+          {
+            "action": "hijack"
+          }
+        ]
       }
     },
     {
       "tag": "direct",
       "protocol": "freedom",
-      "streamSettings": {
-        "sockopt": {
-          "domainStrategy": "UseIP"
-        }
+      "settings": {
+        "domainStrategy": "UseIP"
       }
     },
     {

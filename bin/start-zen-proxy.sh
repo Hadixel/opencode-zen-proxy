@@ -16,7 +16,17 @@
 #                        that use geosite:/geoip: routing rules)
 set -eu
 
-XRAY="${XRAY:-xray}"
+if [ -z "${XRAY:-}" ]; then
+  if command -v xray >/dev/null 2>&1; then
+    XRAY=xray
+  elif [ -x "$HOME/.local/bin/xray" ]; then
+    XRAY="$HOME/.local/bin/xray"
+  elif [ -x "$HOME/.local/share/v2rayN/bin/xray/xray" ]; then
+    XRAY="$HOME/.local/share/v2rayN/bin/xray/xray"
+  else
+    XRAY=xray
+  fi
+fi
 CONFIG="${ZEN_PROXY_CONFIG:-$HOME/.config/zen-proxy/zen.json}"
 PORT="${ZEN_PROXY_PORT:-10901}"
 

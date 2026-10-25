@@ -19,7 +19,19 @@ set -eu
 
 ZEN_PORT="${ZEN_PROXY_PORT:-10900}"
 ZEN_CFG="${ZEN_PROXY_CONFIG:-$HOME/.config/zen-proxy/zen.json}"
-XRAY_BIN="${XRAY:-xray}"
+if [ -z "${XRAY:-}" ]; then
+  if command -v xray >/dev/null 2>&1; then
+    XRAY_BIN=xray
+  elif [ -x "$HOME/.local/bin/xray" ]; then
+    XRAY_BIN="$HOME/.local/bin/xray"
+  elif [ -x "$HOME/.local/share/v2rayN/bin/xray/xray" ]; then
+    XRAY_BIN="$HOME/.local/share/v2rayN/bin/xray/xray"
+  else
+    XRAY_BIN=xray
+  fi
+else
+  XRAY_BIN="$XRAY"
+fi
 PROXY="http://127.0.0.1:$ZEN_PORT"
 
 exit_ip() {
@@ -59,7 +71,8 @@ PYEOF
       if [ "$ip" = "unreachable" ]; then
         printf "%-34s %s\n" "$remark" "SKIP (xray failed)"
       else
-        res=$(probe "http://127.0.0.1:$SPARE_PORT")
+        # One config = one exit; retrying it through the plugin only wastes quota.
+        res=$(ZEN_RETRY_DISABLE=1 probe "http://127.0.0.1:$SPARE_PORT")
         printf "%-34s exit=%-18s zen=%s\n" "$remark" "$ip" "$(echo "$res" | cut -c1-20)"
       fi
       kill "$XPID" 2>/dev/null; sleep 1
