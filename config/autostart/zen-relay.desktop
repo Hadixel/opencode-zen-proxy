@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=zen-relay
+Comment=Transparent relay in front of zen-proxy that rotates pinned tunnels
+Exec=$(which opencode 2>/dev/null || echo ~/opencode-zen-proxy)/bin/start-zen-relay.sh
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true

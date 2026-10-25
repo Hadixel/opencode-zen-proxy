@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=zen-proxy
+Comment=Dedicated Xray instance for OpenCode Zen traffic
+# Adjust the path to where you installed xray and this config.
+Exec=/path/to/xray run -c /path/to/opencode-zen-proxy/config/xray-balancer.example.json
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true

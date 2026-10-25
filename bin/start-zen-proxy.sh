@@ -1,6 +1,6 @@
 #!/bin/sh
 # start-zen-proxy.sh — run a dedicated Xray instance that serves an HTTP+SOCKS
-# proxy for OpenCode Zen traffic (default 127.0.0.1:10900).
+# proxy for OpenCode Zen traffic (default 127.0.0.1:10901).
 #
 #   ZEN_PROXY_CONFIG=~/.config/zen-proxy/zen.json ./start-zen-proxy.sh
 #
@@ -9,7 +9,7 @@
 # moved to port+53.
 #
 # Environment:
-#   ZEN_PROXY_PORT       listen port (default 10900)
+#   ZEN_PROXY_PORT       listen port (default 10901)
 #   ZEN_PROXY_CONFIG     Xray config to run (default ~/.config/zen-proxy/zen.json)
 #   XRAY                 xray binary (default: xray on PATH)
 #   XRAY_LOCATION_ASSET  dir containing geoip.dat/geosite.dat (needed by configs
@@ -18,7 +18,7 @@ set -eu
 
 XRAY="${XRAY:-xray}"
 CONFIG="${ZEN_PROXY_CONFIG:-$HOME/.config/zen-proxy/zen.json}"
-PORT="${ZEN_PROXY_PORT:-10900}"
+PORT="${ZEN_PROXY_PORT:-10901}"
 
 [ -f "$CONFIG" ] || {
   echo "no config at $CONFIG" >&2

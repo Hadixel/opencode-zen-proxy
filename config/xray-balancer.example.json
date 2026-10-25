@@ -1,23 +1,31 @@
 {
   "//": "Example dedicated Xray instance for OpenCode Zen traffic.",
-  "//2": "It listens as an HTTP+SOCKS (mixed) proxy on 127.0.0.1:10900 and spreads",
+  "//2": "Serves an HTTP+SOCKS (mixed) proxy on 127.0.0.1:10901 and spreads",
   "//3": "requests over several upstream servers with a random balancer, so each",
-  "//4": "request can use a different exit IP (free-tier allowance is per exit IP).",
-  "//5": "Replace the placeholder addresses/ids with your own servers. Keep this",
-  "//6": "file private: it contains credentials.",
+  "//4": "tunnel can use a different exit IP (free-tier allowance is per exit IP).",
+  "//5": "Put bin/zen-relay.js in front (127.0.0.1:10900 -> 10901) so OpenCode's",
+  "//6": "pooled tunnels are rotated and do not pin a spent exit.",
+  "//7": "Replace the placeholder servers with your own. Keep this file private.",
+  "//8": "geosite:/geoip: rules need XRAY_LOCATION_ASSET pointing at the .dat files.",
   "log": {
     "loglevel": "warning"
   },
   "dns": {
     "servers": [
-      "1.1.1.1",
-      "8.8.8.8"
-    ]
+      {
+        "address": "https://8.8.8.8/dns-query",
+        "tag": "remote-dns"
+      },
+      {
+        "address": "8.8.8.8"
+      }
+    ],
+    "queryStrategy": "UseIP"
   },
   "inbounds": [
     {
       "listen": "127.0.0.1",
-      "port": 10900,
+      "port": 10901,
       "protocol": "mixed",
       "settings": {
         "auth": "noauth",
@@ -35,10 +43,10 @@
     },
     {
       "listen": "127.0.0.1",
-      "port": 10953,
+      "port": 10954,
       "protocol": "dokodemo-door",
       "settings": {
-        "address": "1.1.1.1",
+        "address": "8.8.8.8",
         "network": "tcp,udp",
         "port": 53
       },
@@ -103,30 +111,11 @@
       }
     },
     {
-      "tag": "s3",
-      "protocol": "vless",
+      "tag": "dns-out",
+      "protocol": "dokodemo-door",
       "settings": {
-        "vnext": [
-          {
-            "address": "server3.example.com",
-            "port": 8443,
-            "users": [
-              {
-                "id": "00000000-0000-0000-0000-000000000000",
-                "encryption": "none",
-                "flow": ""
-              }
-            ]
-          }
-        ]
-      },
-      "streamSettings": {
-        "network": "tcp",
-        "security": "tls",
-        "tlsSettings": {
-          "serverName": "server3.example.com",
-          "fingerprint": "firefox"
-        }
+        "address": "8.8.8.8",
+        "port": 53
       }
     },
     {
@@ -150,8 +139,7 @@
         "tag": "zenbal",
         "selector": [
           "s1",
-          "s2",
-          "s3"
+          "s2"
         ],
         "strategy": {
           "type": "random"
@@ -161,6 +149,42 @@
     "rules": [
       {
         "type": "field",
+        "inboundTag": [
+          "mixed-in"
+        ],
+        "port": 53,
+        "outboundTag": "dns-out"
+      },
+      {
+        "type": "field",
+        "inboundTag": [
+          "dns-in"
+        ],
+        "outboundTag": "dns-out"
+      },
+      {
+        "type": "field",
+        "inboundTag": [
+          "remote-dns"
+        ],
+        "balancerTag": "zenbal"
+      },
+      {
+        "type": "field",
+        "inboundTag": [
+          "dns"
+        ],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
+        "domain": [
+          "geosite:private"
+        ],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
         "ip": [
           "geoip:private"
         ],
@@ -168,9 +192,24 @@
       },
       {
         "type": "field",
-        "network": "tcp,udp",
+        "network": "udp",
+        "outboundTag": "block"
+      },
+      {
+        "type": "field",
+        "network": "tcp",
         "balancerTag": "zenbal"
       }
     ]
+  },
+  "policy": {
+    "levels": {
+      "0": {
+        "connIdle": 120,
+        "handshake": 8,
+        "uplinkOnly": 5,
+        "downlinkOnly": 5
+      }
+    }
   }
 }

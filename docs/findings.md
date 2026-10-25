@@ -68,6 +68,25 @@ Shared/datacenter exits are frequently spent; that is why a single proxy often
 "never works" while another works immediately. `zen-exit-check.sh --sweep`
 automates finding a live one.
 
+### Per-tunnel exit pinning (the real reason a single proxy "sometimes works")
+
+Exits rotate **per TCP tunnel**, not per request. Bun keeps pooled CONNECT
+tunnels; the proxy picks the upstream exit once when the tunnel opens and
+reuses it. Once a tunnel's exit is spent, *every* request on that tunnel 429s
+until the tunnel is dropped — confirmed empirically: dropping the proxy's
+tunnels (not restarting OpenCode) made the next request succeed immediately.
+
+So even with a balancer, a single long-lived tunnel stays pinned to one exit,
+which is why "the same server" can show OK for a moment and 429 the next.
+
+### Fix: rotate idle tunnels (zen-relay.js)
+
+A transparent TCP relay between OpenCode (port 10900) and the proxy (port 10901)
+closes tunnels after ~3 min of age, but only when momentarily quiet (so an
+in-flight stream is never cut). Each new tunnel lets the proxy pick a fresh exit.
+Verified live: a request before rotation and a request after both returned
+`OK`, hitting different exits; the relay logged `rotated after Ns`.
+
 ## 4. There is a short burst limit as well
 
 Paced single requests at ~20 s intervals: 3/3 direct `OK`, 3/3 proxied `OK`.
