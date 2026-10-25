@@ -336,6 +336,45 @@ server.on('connect', (req, clientSocket, head) => {
   }
 });
 
+// Forward regular HTTP proxy requests
+server.on('request', (req, res) => {
+  const targetHost = req.headers['host'] || '';
+  if (targetHost.includes('opencode.ai')) {
+    interceptor.emit('request', req, res);
+  } else {
+    const upstreamReq = http.request(req.url, {
+      method: req.method,
+      headers: req.headers
+    }, (upstreamRes) => {
+      res.writeHead(upstreamRes.statusCode || 200, upstreamRes.headers);
+      upstreamRes.pipe(res);
+    });
+    upstreamReq.on('error', (err) => {
+      if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain' });
+      res.end(`Proxy forward error: ${err.message}`);
+    });
+    req.pipe(upstreamReq);
+  }
+});
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    log(`Error: Port ${LISTEN_PORT} is already in use by another process.`);
+    log(`Run: fuser -k ${LISTEN_PORT}/tcp to free it.`);
+    process.exit(1);
+  } else {
+    log('Server error:', err.message);
+  }
+});
+
+process.on('uncaughtException', (err) => {
+  log('Uncaught exception:', err.message);
+});
+
+process.on('unhandledRejection', (err) => {
+  log('Unhandled rejection:', err);
+});
+
 // Periodic idle connection cleanup for raw connections
 const ticker = setInterval(() => {
   const now = Date.now();
