@@ -68,6 +68,12 @@ if (-not (Test-Path $ZenDir)) {
     New-Item -ItemType Directory -Force -Path $ZenDir | Out-Null
 }
 
+$defaultConfigFile = Join-Path (Join-Path $ScriptDir "..") "config\zen-default.json"
+if (-not (Test-Path $ConfigFile) -and (Test-Path $defaultConfigFile)) {
+    Copy-Item $defaultConfigFile $ConfigFile -Force
+    Write-Host "Initialized baseline proxy configuration from zen-default.json" -ForegroundColor Green
+}
+
 # 1. Check Node.js
 Write-Host "[1/5] Checking Node.js..."
 $nodeCmd = Get-Command "node" -ErrorAction SilentlyContinue
@@ -123,16 +129,30 @@ Write-Host "[3/5] Configuring OpenCode proxy environment and plugin..."
 $SetupScript = Join-Path $ScriptDir "zen-setup.ps1"
 & $SetupScript
 
+$opencodeBin = Find-OpenCode
+if ($opencodeBin) {
+    $env:OPENCODE_BIN = $opencodeBin
+    Write-Host "      Detected OpenCode: $opencodeBin" -ForegroundColor Green
+} else {
+    Write-Host "      OpenCode executable not found on PATH or standard locations." -ForegroundColor Yellow
+    Write-Host "      (If OpenCode is installed elsewhere, set `$env:OPENCODE_BIN before running zen-install.ps1)" -ForegroundColor Yellow
+}
+
 # 4. Scrape & Validate
 if (-not $NoScrape) {
     Write-Host "[4/5] Scraping and validating proxy exit nodes..."
     if (-not (Test-Path $ConfigFile) -or $Force) {
         $ScrapeScript = Join-Path $ScriptDir "zen-scrape.js"
         $env:ZEN_TARGET_OK = "3"
-        $env:ZEN_CHECK_CONCURRENCY = "4"
+        $env:ZEN_CHECK_CONCURRENCY = "6"
         & $nodeCmd.Source "$ScrapeScript" --limit 300 --concurrency 30 --zen-check 50 --output "$ConfigFile"
     } else {
         Write-Host "      Existing config found at $ConfigFile (use -Force to re-scrape)."
+    }
+
+    if ((-not (Test-Path $ConfigFile) -or (Get-Item $ConfigFile).Length -eq 0) -and (Test-Path $defaultConfigFile)) {
+        Copy-Item $defaultConfigFile $ConfigFile -Force
+        Write-Host "      Using bundled default working exit node in $ConfigFile" -ForegroundColor Green
     }
 } else {
     Write-Host "[4/5] Skipping proxy scrape (-NoScrape specified)."
@@ -148,11 +168,13 @@ if (-not $NoService) {
 }
 
 if (-not $NoRestart) {
-    $opencodeCmd = Get-Command "opencode" -ErrorAction SilentlyContinue
-    if ($opencodeCmd) {
+    if (-not $opencodeBin) {
+        $opencodeBin = Find-OpenCode
+    }
+    if ($opencodeBin) {
         Write-Host "`nRestarting OpenCode background service..."
         try {
-            & $opencodeCmd.Source service restart
+            & $opencodeBin service restart
         } catch {
             Write-Host "Note: run 'opencode service restart' to apply proxy configuration."
         }

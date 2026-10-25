@@ -65,6 +65,43 @@ function Find-Xray {
     return $null
 }
 
+function Find-OpenCode {
+    if ($env:OPENCODE_BIN -and (Test-Path $env:OPENCODE_BIN)) {
+        return $env:OPENCODE_BIN
+    }
+    $cmd = Get-Command "opencode" -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source) {
+        return $cmd.Source
+    }
+    $ExeNames = if ($IsWindows -or ($PSVersionTable.PSVersion.Major -le 5)) {
+        @("opencode.exe", "opencode.cmd", "opencode.bat")
+    } else {
+        @("opencode")
+    }
+    $candidates = @()
+    foreach ($exe in $ExeNames) {
+        $candidates += @(
+            (Join-Path $HOME ".opencode\bin\$exe"),
+            (Join-Path $HOME ".local\bin\$exe"),
+            (Join-Path $env:LOCALAPPDATA "Programs\opencode\$exe"),
+            (Join-Path $env:LOCALAPPDATA "opencode\bin\$exe"),
+            (Join-Path $env:APPDATA "npm\$exe"),
+            (Join-Path $env:ProgramFiles "opencode\$exe"),
+            (Join-Path ${env:ProgramFiles(x86)} "opencode\$exe"),
+            (Join-Path $env:ProgramData "chocolatey\bin\$exe"),
+            (Join-Path $HOME "scoop\shims\$exe"),
+            "/usr/local/bin/$exe",
+            "/usr/bin/$exe"
+        )
+    }
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path $c)) {
+            return $c
+        }
+    }
+    return $null
+}
+
 function Test-PortListening([int]$Port) {
     try {
         $client = [System.Net.Sockets.TcpClient]::new()
@@ -272,10 +309,23 @@ function Invoke-Scrape {
         return
     }
 
-    $env:ZEN_TARGET_OK = if ($env:ZEN_TARGET_OK) { $env:ZEN_TARGET_OK } else { "5" }
-    $env:ZEN_CHECK_CONCURRENCY = if ($env:ZEN_CHECK_CONCURRENCY) { $env:ZEN_CHECK_CONCURRENCY } else { "5" }
+    $opencodePath = Find-OpenCode
+    if ($opencodePath) {
+        $env:OPENCODE_BIN = $opencodePath
+        Write-Host "Using OpenCode binary: $opencodePath"
+    }
+
+    $env:ZEN_TARGET_OK = if ($env:ZEN_TARGET_OK) { $env:ZEN_TARGET_OK } else { "3" }
+    $env:ZEN_CHECK_CONCURRENCY = if ($env:ZEN_CHECK_CONCURRENCY) { $env:ZEN_CHECK_CONCURRENCY } else { "6" }
 
     & $nodeCmd.Source "$ScrapeScript" --limit 1000 --concurrency 40 --zen-check 200 --output "$ConfigFile"
+
+    $defaultConfigFile = Join-Path (Join-Path $ScriptDir "..") "config\zen-default.json"
+    if ((-not (Test-Path $ConfigFile) -or (Get-Item $ConfigFile).Length -eq 0) -and (Test-Path $defaultConfigFile)) {
+        Copy-Item $defaultConfigFile $ConfigFile -Force
+        Write-Host "Using bundled default working exit node in $ConfigFile" -ForegroundColor Green
+    }
+
     Write-Host "Restarting services with fresh proxy pool..."
     Stop-Services
     Start-Services

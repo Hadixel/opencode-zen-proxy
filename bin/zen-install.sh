@@ -58,6 +58,15 @@ die() { warn "$*"; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"; }
 
+find_opencode() {
+  if [ -n "${OPENCODE_BIN:-}" ] && [ -x "$OPENCODE_BIN" ]; then echo "$OPENCODE_BIN"; return 0; fi
+  if command -v opencode >/dev/null 2>&1; then command -v opencode; return 0; fi
+  for candidate in "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/opencode" "/usr/local/bin/opencode" "/usr/bin/opencode"; do
+    [ -x "$candidate" ] && { echo "$candidate"; return 0; }
+  done
+  return 1
+}
+
 find_xray() {
   if [ -n "${XRAY:-}" ] && [ -x "$XRAY" ]; then echo "$XRAY"; return 0; fi
   if command -v xray >/dev/null 2>&1; then command -v xray; return 0; fi
@@ -211,9 +220,14 @@ say "repository: $REPO_DIR"
 need node
 need python3
 need curl
-need opencode
+
+OPENCODE_BIN=$(find_opencode || true)
+if [ -z "$OPENCODE_BIN" ]; then
+  die "opencode executable not found; install OpenCode or set OPENCODE_BIN"
+fi
 say "node: $(command -v node)"
-say "opencode: $(command -v opencode)"
+say "opencode: $OPENCODE_BIN"
+export OPENCODE_BIN
 
 XRAY_BIN=$(find_xray || true)
 if [ -z "$XRAY_BIN" ]; then
@@ -223,13 +237,20 @@ say "xray: $XRAY_BIN"
 
 install_files
 
+if [ ! -f "$CONFIG_DIR/zen.json" ] && [ -f "$REPO_DIR/config/zen-default.json" ]; then
+  cp "$REPO_DIR/config/zen-default.json" "$CONFIG_DIR/zen.json"
+  say "initialized baseline configuration from zen-default.json"
+fi
+
 if [ "$DO_SCRAPE" = 1 ]; then
-  if [ -f "$CONFIG_DIR/zen.json" ] && [ "$REFRESH" != 1 ]; then
+  if [ -f "$CONFIG_DIR/zen.json" ] && [ "$REFRESH" != 1 ] && [ "$FORCE" != 1 ]; then
     say "existing $CONFIG_DIR/zen.json found; use --refresh to replace it"
   else
     say "scraping public node feeds (limit $LIMIT, Zen checks $ZEN_CHECK)"
-    if ! XRAY="$XRAY_BIN" node "$BIN_DIR/zen-scrape.js" --limit "$LIMIT" --concurrency 16 --timeout 6 --zen-check "$ZEN_CHECK"; then
-      [ -f "$CONFIG_DIR/zen.json" ] || die "scrape failed and no config exists"
+    export ZEN_TARGET_OK="${ZEN_TARGET_OK:-3}"
+    export ZEN_CHECK_CONCURRENCY="${ZEN_CHECK_CONCURRENCY:-6}"
+    if ! XRAY="$XRAY_BIN" OPENCODE_BIN="$OPENCODE_BIN" node "$BIN_DIR/zen-scrape.js" --limit "$LIMIT" --concurrency 24 --timeout 6 --zen-check "$ZEN_CHECK"; then
+      [ -f "$CONFIG_DIR/zen.json" ] || cp "$REPO_DIR/config/zen-default.json" "$CONFIG_DIR/zen.json" 2>/dev/null || die "scrape failed and no config exists"
       warn "scrape failed; keeping the existing config"
     fi
   fi
@@ -250,8 +271,8 @@ else
 fi
 
 # Pick up the proxy env and the plugin on the next server start.
-if [ "$RESTART_OPENCODE" = 1 ] && command -v opencode >/dev/null 2>&1; then
-  opencode service restart >/dev/null 2>&1 || warn "could not restart the OpenCode service; run: opencode service restart"
+if [ "$RESTART_OPENCODE" = 1 ] && [ -n "$OPENCODE_BIN" ]; then
+  "$OPENCODE_BIN" service restart >/dev/null 2>&1 || warn "could not restart the OpenCode service; run: opencode service restart"
 else
   say "OpenCode service restart skipped; run 'opencode service restart' to load the proxy env and plugin"
 fi

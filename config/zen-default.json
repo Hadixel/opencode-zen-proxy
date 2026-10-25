@@ -1,0 +1,174 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "dns": {
+    "servers": [
+      {
+        "address": "https://1.1.1.1/dns-query",
+        "tag": "remote-dns"
+      },
+      {
+        "address": "1.1.1.1"
+      }
+    ],
+    "queryStrategy": "UseIP"
+  },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 10901,
+      "protocol": "mixed",
+      "settings": {
+        "auth": "noauth",
+        "udp": true
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls"
+        ],
+        "routeOnly": true
+      },
+      "tag": "mixed-in"
+    },
+    {
+      "listen": "127.0.0.1",
+      "port": 10954,
+      "protocol": "dokodemo-door",
+      "settings": {
+        "address": "1.1.1.1",
+        "network": "tcp,udp",
+        "port": 53
+      },
+      "tag": "dns-in"
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "89.169.53.176",
+            "port": 4443,
+            "users": [
+              {
+                "id": "20dd9433-389e-4573-ba7b-689619cf13da",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision",
+                "level": 0
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "gateway.icloud.com",
+          "fingerprint": "chrome",
+          "publicKey": "YIyohkkCU5kw6J5iZYZkhILyDwlfftFPDTkbITlrAUw",
+          "shortId": "df3aff719526dc5a"
+        }
+      },
+      "tag": "pub0"
+    },
+    {
+      "tag": "dns-out",
+      "protocol": "dns",
+      "settings": {
+        "rules": [
+          {
+            "action": "hijack"
+          }
+        ]
+      }
+    },
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "UseIP"
+      }
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole"
+    }
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "balancers": [
+      {
+        "tag": "zenbal",
+        "selector": [
+          "pub0"
+        ],
+        "strategy": {
+          "type": "roundRobin"
+        }
+      }
+    ],
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": [
+          "mixed-in"
+        ],
+        "port": 53,
+        "outboundTag": "dns-out"
+      },
+      {
+        "type": "field",
+        "inboundTag": [
+          "dns-in"
+        ],
+        "outboundTag": "dns-out"
+      },
+      {
+        "type": "field",
+        "domain": [
+          "localhost"
+        ],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
+        "ip": [
+          "127.0.0.0/8",
+          "10.0.0.0/8",
+          "172.16.0.0/12",
+          "192.168.0.0/16",
+          "169.254.0.0/16",
+          "::1/128",
+          "fc00::/7",
+          "fe80::/10"
+        ],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
+        "network": "udp",
+        "outboundTag": "block"
+      },
+      {
+        "type": "field",
+        "network": "tcp",
+        "balancerTag": "zenbal"
+      }
+    ]
+  },
+  "policy": {
+    "levels": {
+      "0": {
+        "connIdle": 60,
+        "handshake": 8,
+        "uplinkOnly": 5,
+        "downlinkOnly": 5
+      }
+    }
+  }
+}

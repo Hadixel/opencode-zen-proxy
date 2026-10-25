@@ -677,8 +677,50 @@ function writeAtomic(file, text) {
 }
 
 // ---------------------------------------------------------------------------
-// Xray
+// Xray & OpenCode
 // ---------------------------------------------------------------------------
+
+function findOpencode() {
+  if (process.env.OPENCODE_BIN && fs.existsSync(process.env.OPENCODE_BIN)) {
+    return process.env.OPENCODE_BIN;
+  }
+  const isWin = process.platform === "win32";
+  const exeNames = isWin ? ["opencode.exe", "opencode.cmd", "opencode.bat"] : ["opencode"];
+
+  // 1. Check PATH
+  const pathDirs = (process.env.PATH || "").split(path.delimiter);
+  for (const dir of pathDirs) {
+    if (!dir) continue;
+    for (const exe of exeNames) {
+      const candidate = path.join(dir, exe);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+
+  // 2. Common platform install locations
+  const candidatePaths = [];
+  for (const exe of exeNames) {
+    candidatePaths.push(
+      path.join(HOME, ".opencode", "bin", exe),
+      path.join(HOME, ".local", "bin", exe),
+      path.join(process.env.LOCALAPPDATA || "", "Programs", "opencode", exe),
+      path.join(process.env.LOCALAPPDATA || "", "opencode", "bin", exe),
+      path.join(process.env.USERPROFILE || "", ".opencode", "bin", exe),
+      path.join(process.env.APPDATA || "", "npm", exe),
+      path.join(process.env["ProgramFiles"] || "C:\\Program Files", "opencode", exe),
+      path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "opencode", exe),
+      path.join(process.env.ProgramData || "C:\\ProgramData", "chocolatey", "bin", exe),
+      path.join(process.env.USERPROFILE || "", "scoop", "shims", exe),
+      `/usr/local/bin/${exe}`,
+      `/usr/bin/${exe}`
+    );
+  }
+
+  for (const candidate of candidatePaths) {
+    if (candidate && fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
 
 function findXray() {
   const isWin = process.platform === "win32";
@@ -798,13 +840,17 @@ function runCurl(port, timeoutSec) {
   return new Promise((resolve) => {
     // Cloudflare's trace endpoint is on the same host as Zen and reports the
     // exit IP, so this checks the real destination instead of a third party.
-    const child = spawn("curl", [
+    const isWin = process.platform === "win32";
+    const curlBin = isWin ? "curl.exe" : "curl";
+    const child = spawn(curlBin, [
       "-sS", "--max-time", String(timeoutSec),
       "--proxy", `http://127.0.0.1:${port}`,
       "-w", "\n%{http_code}",
       "https://opencode.ai/cdn-cgi/trace",
     ], {
       stdio: ["ignore", "pipe", "pipe"],
+      shell: isWin,
+      windowsHide: true,
       env: {
         ...process.env,
         NO_PROXY: "", no_proxy: "",
@@ -816,7 +862,7 @@ function runCurl(port, timeoutSec) {
     let err = "";
     child.stdout.on("data", (d) => { out += d.toString(); });
     child.stderr.on("data", (d) => { err += d.toString(); });
-    child.on("error", () => resolve({ ok: false, error: "curl missing" }));
+    child.on("error", (e) => resolve({ ok: false, error: `curl missing (${e.message})` }));
     child.on("close", (code) => {
       const lines = out.trimEnd().split("\n");
       const status = Number(lines.pop());
@@ -828,7 +874,7 @@ function runCurl(port, timeoutSec) {
   });
 }
 
-async function probeExits(xray, nodes, basePort) {
+async function probeExits(xray, nodes, basePort, checkState = null) {
   if (!xray) {
     warn("xray not found; skipping connectivity probes");
     return nodes.map((node) => ({ ...node, lastOk: undefined, exitIp: undefined }));
@@ -857,7 +903,7 @@ async function probeExits(xray, nodes, basePort) {
     routing: { domainStrategy: "AsIs", rules },
   };
   fs.mkdirSync(tmpDir(), { recursive: true, mode: 0o700 });
-  const file = path.join(tmpDir(), "probe.json");
+  const file = path.join(tmpDir(), `probe-${basePort}.json`);
   fs.writeFileSync(file, JSON.stringify(config));
   debug(`starting probe xray on ${basePort}..${basePort + nodes.length - 1}`);
   const child = spawn(xray, ["run", "-c", file], { stdio: ["ignore", "ignore", "pipe"] });
@@ -866,6 +912,7 @@ async function probeExits(xray, nodes, basePort) {
   const ready = await waitForPort(basePort);
   if (!ready) {
     await stopChild(child);
+    try { fs.unlinkSync(file); } catch (_) {}
     warn("probe xray did not start:", stderr.trim().split("\n").slice(-3).join(" "));
     return nodes.map((node) => ({ ...node, lastOk: undefined }));
   }
@@ -890,27 +937,30 @@ async function probeExits(xray, nodes, basePort) {
   }));
   // Zen checks must run while this probe instance is still listening.
   const withZen = opt.zenCheck
-    ? await checkZen(probed, probed.map((node, i) => (node.lastOk ? i : -1)).filter((i) => i >= 0))
+    ? await checkZen(probed, probed.map((node, i) => (node.lastOk ? i : -1)).filter((i) => i >= 0), checkState)
     : probed;
   await stopChild(child);
+  try { fs.unlinkSync(file); } catch (_) {}
   withZen.forEach((node) => { delete node.__probePort; });
   return withZen;
 }
 
-async function checkZen(nodes, liveIndexes) {
+async function checkZen(nodes, liveIndexes, checkState = null) {
   if (!opt.zenCheck || !liveIndexes.length) return nodes;
-  const opencode = process.env.OPENCODE_BIN || "opencode";
+  const state = checkState || { foundOk: 0, targetZenOk: Number(process.env.ZEN_TARGET_OK || 3) };
+  if (state.foundOk >= state.targetZenOk) return nodes;
+  const opencode = findOpencode() || process.env.OPENCODE_BIN || "opencode";
   const checkModel = process.env.ZEN_CHECK_MODEL || "opencode/deepseek-v4.1-flash-free";
-  const targetZenOk = Number(process.env.ZEN_TARGET_OK || 5);
-  const concurrency = Number(process.env.ZEN_CHECK_CONCURRENCY || 4);
+  const targetZenOk = state.targetZenOk;
+  const concurrency = Number(process.env.ZEN_CHECK_CONCURRENCY || 6);
+  const isWin = process.platform === "win32";
   const maxToCheck = Math.min(opt.zenCheck, liveIndexes.length);
-  warn(`checking up to ${maxToCheck} exit(s) against Zen (${checkModel}) with concurrency ${concurrency} (target: ${targetZenOk} working exits)`);
+  warn(`checking up to ${maxToCheck} exit(s) against Zen (${checkModel}) with concurrency ${concurrency} (target: ${targetZenOk} working exits, found: ${state.foundOk})`);
   
   let nextIdx = 0;
-  let foundOk = 0;
   
   const worker = async () => {
-    while (nextIdx < maxToCheck && foundOk < targetZenOk) {
+    while (nextIdx < maxToCheck && state.foundOk < targetZenOk) {
       const idx = nextIdx++;
       const nodeIndex = liveIndexes[idx];
       const node = nodes[nodeIndex];
@@ -926,21 +976,32 @@ async function checkZen(nodes, liveIndexes) {
       };
       
       const result = await new Promise((resolve) => {
-        const child = spawn(opencode, ["run", "--standalone", "--model", checkModel, "say OK"], {
+        const child = spawn(opencode, ["run", "--standalone", "--format", "json", "--model", checkModel, "say OK"], {
           cwd: os.tmpdir(),
           env,
+          shell: isWin,
+          windowsHide: true,
           stdio: ["ignore", "pipe", "pipe"],
         });
         let out = "";
         let err = "";
         child.stdout.on("data", (d) => { out += d.toString(); });
         child.stderr.on("data", (d) => { err += d.toString(); });
-        const timer = setTimeout(() => { child.kill("SIGKILL"); resolve({ ok: false, text: "timeout" }); }, 20000);
+        const timer = setTimeout(() => {
+          if (isWin) {
+            try { require("node:child_process").execSync(`taskkill /F /T /PID ${child.pid}`, { stdio: "ignore" }); } catch (_) {}
+          } else {
+            child.kill("SIGKILL");
+          }
+          resolve({ ok: false, text: "timeout" });
+        }, 18000);
         child.on("error", (error) => { clearTimeout(timer); resolve({ ok: false, text: error.message }); });
         child.on("close", () => {
           clearTimeout(timer);
           const text = `${out}\n${err}`;
-          const ok = /\bOK\b/.test(out) && !/FreeUsageLimit|FreeTierError|free usage limit/i.test(text);
+          const isLimit = /FreeUsageLimit|FreeTierError|free usage limit|quota/i.test(text);
+          const hasOk = /\bOK\b/.test(out) || /"text":\s*"[^"]*OK[^"]*"/i.test(out);
+          const ok = hasOk && !isLimit;
           resolve({ ok, text: text.slice(-400) });
         });
       });
@@ -949,8 +1010,8 @@ async function checkZen(nodes, liveIndexes) {
       node.zenChecked = Date.now();
       warn(`zen check [${node.protocol}] ${node.host}:${node.port} -> ${result.ok ? "SUCCESS (OK)" : "FAIL"}`);
       if (result.ok) {
-        foundOk++;
-        warn(`>>> Found working Zen exit (${foundOk}/${targetZenOk}): [${node.protocol}] ${node.host}:${node.port} <<<`);
+        state.foundOk++;
+        warn(`>>> Found working Zen exit (${state.foundOk}/${targetZenOk}): [${node.protocol}] ${node.host}:${node.port} <<<`);
       }
     }
   };
@@ -1089,8 +1150,11 @@ async function main() {
     warn("no usable nodes; keeping the existing config");
     return 1;
   }
-  nodes = nodes.slice(0, opt.limit);
-  log(`using ${nodes.length} candidate(s)${cached.length ? ` (${cached.length} cached)` : ""}`);
+  const isZenScan = opt.zenCheck > 0;
+  if (!isZenScan) {
+    nodes = nodes.slice(0, opt.limit);
+  }
+  log(`evaluating pool of ${nodes.length} candidate(s)${cached.length ? ` (${cached.length} cached)` : ""}`);
 
   if (opt.test) {
     const xray = findXray();
@@ -1098,35 +1162,70 @@ async function main() {
       warn("xray not found; install Xray or set XRAY. Writing all candidates without probes.");
     } else {
       log(`xray: ${xray}`);
-      nodes = await validateOutbounds(xray, nodes);
-      if (!nodes.length) {
-        warn("no outbounds passed Xray validation; keeping the existing config");
-        return 1;
+      const targetZenOk = Number(process.env.ZEN_TARGET_OK || 3);
+      const batchSize = Math.max(30, Math.min(100, opt.limit || 100));
+      const maxCandidates = isZenScan ? Math.min(nodes.length, Math.max(opt.limit, 1200)) : Math.min(nodes.length, opt.limit);
+      const candidatesToScan = nodes.slice(0, maxCandidates);
+
+      const checkState = { foundOk: 0, targetZenOk };
+      const verifiedExits = [];
+      const seenExitIps = new Set();
+      let allReachable = [];
+
+      for (let offset = 0; offset < candidatesToScan.length; offset += batchSize) {
+        if (isZenScan && checkState.foundOk >= checkState.targetZenOk) break;
+
+        const batch = candidatesToScan.slice(offset, offset + batchSize);
+        log(`probing batch ${Math.floor(offset / batchSize) + 1} (${batch.length} candidates, offset ${offset})...`);
+
+        const validBatch = await validateOutbounds(xray, batch);
+        if (!validBatch.length) continue;
+
+        const basePort = await freePortFor(validBatch.length);
+        const probedBatch = await probeExits(xray, validBatch, basePort, isZenScan ? checkState : null);
+        const liveBatch = probedBatch.filter((node) => node.lastOk);
+        log(`probe batch result: ${liveBatch.length}/${validBatch.length} exit(s) reachable`);
+
+        for (const node of liveBatch) {
+          if (!node.exitIp || !seenExitIps.has(node.exitIp)) {
+            if (node.exitIp) seenExitIps.add(node.exitIp);
+            allReachable.push(node);
+          }
+          if (node.zenOk) {
+            verifiedExits.push(node);
+          }
+        }
+
+        if (isZenScan && checkState.foundOk >= checkState.targetZenOk) {
+          log(`reached target of ${checkState.targetZenOk} verified Zen exit(s); stopping scan.`);
+          break;
+        }
       }
-      const basePort = await freePortFor(nodes.length);
-      nodes = await probeExits(xray, nodes, basePort);
-      const live = nodes.filter((node) => node.lastOk);
-      log(`probe: ${live.length}/${nodes.length} exit(s) reachable`);
-      if (live.length) {
-        // Several nodes can hide behind the same exit IP. Keep one per IP so a
-        // balancer rotation actually changes the free-tier allowance.
-        const seenExit = new Set();
-        nodes = nodes.filter((node) => {
-          if (!node.lastOk || !node.exitIp) return true;
-          if (seenExit.has(node.exitIp)) return false;
-          seenExit.add(node.exitIp);
-          return true;
-        });
-        log(`probe: ${seenExit.size} unique exit IP(s)`);
-        // Only reachable exits belong in the balancer. A dead fallback would
-        // just consume a random slot and cause another retry.
-        nodes = nodes.filter((node) => node.lastOk);
-        nodes.sort(
-          (a, b) =>
-            Number(Boolean(b.zenOk)) - Number(Boolean(a.zenOk)) ||
-            Number(Boolean(b.lastOk)) - Number(Boolean(a.lastOk)),
-        );
+
+      if (isZenScan) {
+        if (verifiedExits.length > 0) {
+          log(`successfully verified ${verifiedExits.length} working Zen exit(s)`);
+          nodes = verifiedExits;
+        } else {
+          warn("WARNING: None of the candidate exits passed OpenCode Zen verification.");
+          const defaultConfigFile = path.join(__dirname, "..", "config", "zen-default.json");
+          if (fs.existsSync(opt.output)) {
+            warn(`Keeping existing config at ${opt.output} to avoid breaking proxy.`);
+            return 0;
+          } else if (fs.existsSync(defaultConfigFile)) {
+            warn(`Falling back to bundled known-good config from ${defaultConfigFile}`);
+            fs.copyFileSync(defaultConfigFile, opt.output);
+            return 0;
+          } else {
+            warn("No fallback config available; keeping reachable exits as unverified fallback.");
+            nodes = allReachable.length > 0 ? allReachable : nodes;
+          }
+        }
       } else {
+        nodes = allReachable.length > 0 ? allReachable : nodes;
+      }
+
+      if (!nodes.length) {
         warn("no exit was reachable; keeping the existing config");
         return 1;
       }
