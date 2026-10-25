@@ -145,6 +145,25 @@ With a pool of exits, the rotated tunnel lands on a different exit. The plugin
 caps retries (`ZEN_RETRY_MAX`, default 8) so a fully spent pool still fails
 clearly instead of looping forever.
 
+A 429 also carries the allowance reset:
+
+```http
+HTTP/2 429
+retry-after: 20707
+{"type":"error","error":{"type":"FreeUsageLimitError", ...}}
+```
+
+`20707` seconds is next 00:00 UTC. When `Retry-After` is longer than
+`ZEN_RETRY_LONG_MS` (5 minutes), rotating exits cannot help: the plugin stops,
+and asks the relay to schedule a refetch at the reset time. This avoids a retry
+storm against an exhausted allowance.
+
+`--zen-only` was added after the first top100 run: of 45 reachable exits, all
+45 returned `FreeUsageLimitError` at 18:15 UTC, including the direct connection.
+The pool was not "dead" at the network level; it was out of quota. The scraper
+now treats the Zen request as part of health and refuses to write a pool with
+zero quota-healthy exits.
+
 ## 7. Public feed scraper and validator
 
 The default feed is

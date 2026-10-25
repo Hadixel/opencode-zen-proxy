@@ -97,7 +97,7 @@ Useful install flags:
 ```bash
 ./bin/zen-install.sh --refresh            # re-scrape even if a config exists
 ./bin/zen-install.sh --limit 200          # more candidate exits (slower)
-./bin/zen-install.sh --zen-check 5        # verify 5 live exits against Zen
+./bin/zen-install.sh --zen-check 5        # cap Zen checks at 5 exits (default all)
 ./bin/zen-install.sh --no-service         # install files only
 ./bin/zen-install.sh --no-verify          # skip the final exit check
 ./bin/zen-install.sh --no-restart         # install/start proxy, leave OpenCode running
@@ -140,11 +140,17 @@ overwritten by the plugin. To force it anyway:
 curl -X POST 'http://127.0.0.1:10902/refetch?force=1'
 ```
 
+If the gateway sends a long `Retry-After` (the free-tier allowance resets at
+00:00 UTC, often hours away), rotating exits cannot create quota. The plugin
+stops instead of burning retries, and asks the relay to schedule a refetch for
+the reset time. `/status` shows `refetchScheduledAt`.
+
 Defaults and tuning:
 
 ```bash
 ZEN_RETRY_MAX=8           # forced retries before refetching (default 8)
 ZEN_RETRY_DELAY_MS=750    # delay before each forced retry
+ZEN_RETRY_LONG_MS=300000  # Retry-After above this = allowance reset; stop
 ZEN_RETRY_DEBUG=1         # log rotations/retries/refetch to stderr
 ZEN_RETRY_DISABLE=1       # one-shot mode for sweep/probe tools
 ZEN_RELAY_CONTROL=http://127.0.0.1:10902/rotate
@@ -152,6 +158,7 @@ ZEN_REFETCH_URL=http://127.0.0.1:10902/refetch
 ZEN_RELAY_CONTROL_PORT=10902
 ZEN_REFETCH_DISABLE=1     # disable automatic refetch
 ZEN_REFETCH_COOLDOWN_MS=600000
+ZEN_REFETCH_MAX_DELAY_MS=86400000
 ```
 
 To check that the plugin loaded:
@@ -169,12 +176,15 @@ installs the plugin automatically.
 
 ```bash
 ./bin/zen-scrape.sh                       # fetch, validate, probe, write zen.json
-./bin/zen-scrape.sh --zen-check 5         # also test the first 5 live exits against Zen
+./bin/zen-scrape.sh --zen-only            # keep only exits that still have Zen quota
+./bin/zen-scrape.sh --zen-check 5         # test the first 5 live exits against Zen
 ./bin/zen-scrape.sh --dry-run --verbose   # report counts without writing
 ./bin/zen-scrape.sh --refresh             # ignore the cached node list
 ./bin/zen-validate.sh                     # prune dead exits from the active config
+./bin/zen-validate.sh --zen-only          # also prune exits without Zen quota
 ./bin/zen-validate.sh --dry-run           # report healthy exits only
-./bin/zen-refetch.sh                      # refresh and restart Xray
+./bin/zen-refetch.sh                      # refresh (Zen-only) and restart Xray
+./bin/zen-quota.sh                        # show direct-IP quota and reset time
 ```
 
 The default feed is
@@ -194,9 +204,11 @@ Every candidate must pass three checks before it is written:
    `opencode.ai/cdn-cgi/trace`.
 
 Exits that share an exit IP are de-duplicated so a rotation actually changes the
-free-tier allowance. `--zen-check N` additionally verifies the first N healthy
-exits against Zen and duplicates the ones that still have quota in the
-balancer.
+free-tier allowance. `--zen-only` runs a real free-model request through every
+healthy exit and keeps only those that still have quota; automatic refetch uses
+this mode. `--zen-check N` limits that probe to the first N (0 means all).
+Zen checks run with a minimal temporary OpenCode config, so each one takes a few
+seconds instead of loading MCP servers and plugins.
 
 What it writes:
 
@@ -263,7 +275,8 @@ profile. Use the scraper when you want a large pool without owning servers.
 |---|---|---|
 | `403 FreeTierError` | A local forwarder terminated TLS (Node/Python/curl bridge). Zen saw a non-Bun client. | Remove the `baseURL` override. Use `zen-setup.sh` to proxy at the fetch layer instead. |
 | `429 FreeUsageLimitError` | Exit IP's free allowance is spent, or burst too fast. | The plugin rotates and retries automatically. When the pool is exhausted it calls `/refetch`; check `curl http://127.0.0.1:10902/status`. |
-| Pool still dead after refetch | The source returned too few healthy nodes, or the whole free tier is exhausted. | Run `zen-validate.sh --dry-run` for a health report; try `zen-refetch.sh --limit 100` later. |
+| Pool still dead after refetch | The source returned too few healthy nodes, or the whole free tier is exhausted. | Run `zen-validate.sh --zen-only --dry-run` for a health report; try `zen-refetch.sh` after the reset. |
+| `FreeUsageLimitError` with a long `Retry-After` | The free-tier allowance for the exit is reset at 00:00 UTC, not a proxy failure. | Run `zen-quota.sh` to see the reset time. Rotation cannot create quota; the plugin stops and schedules a refetch for the reset (`refetchScheduledAt` in `/status`). |
 | 403/429 still stops the session | Plugin not loaded, or OpenCode older than v2. | Run `ZEN_RETRY_DEBUG=1 opencode ...`; confirm `[zen-retry] plugin loaded`. Update OpenCode. |
 | Plugin loaded but no rotation | Relay control port not listening. | `curl http://127.0.0.1:10902/status`; check `zen-relay` logs. |
 | `ECONNRESET` | Proxy dropped the connection mid-stream. | Normal under heavy rotation; OpenCode retries. Check `zen-proxy.log` for upstream errors. |

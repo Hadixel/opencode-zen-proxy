@@ -21,7 +21,7 @@ CONFIG_DIR="${ZEN_CONFIG_DIR:-$HOME/.config/zen-proxy}"
 OPENCODE_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
 STATE_DIR="$HOME/.local/state/zen-proxy"
 LIMIT="${ZEN_SCRAPE_LIMIT:-150}"
-ZEN_CHECK="${ZEN_ZEN_CHECK:-5}"
+ZEN_CHECK="${ZEN_ZEN_CHECK:-0}"
 DO_SCRAPE=1
 DO_SERVICE=1
 DO_VERIFY=1
@@ -113,7 +113,7 @@ PY
 
 install_files() {
   mkdir -p "$BIN_DIR" "$CONFIG_DIR" "$STATE_DIR" "$OPENCODE_DIR/plugin"
-  for file in zen-relay.js zen-scrape.js zen-scrape.sh zen-validate.sh zen-refetch.sh start-zen-proxy.sh start-zen-relay.sh zen-exit-check.sh zen-setup.sh zen-retry-plugin.js; do
+  for file in zen-relay.js zen-scrape.js zen-scrape.sh zen-validate.sh zen-refetch.sh zen-quota.sh start-zen-proxy.sh start-zen-relay.sh zen-exit-check.sh zen-setup.sh zen-retry-plugin.js; do
     [ -f "$REPO_DIR/bin/$file" ] || die "missing $REPO_DIR/bin/$file"
     install -m 0755 "$REPO_DIR/bin/$file" "$BIN_DIR/$file"
   done
@@ -232,7 +232,7 @@ if [ "$DO_SCRAPE" = 1 ]; then
     say "existing $CONFIG_DIR/zen.json found; use --refresh to replace it"
   else
     say "scraping public node feeds (limit $LIMIT, Zen checks $ZEN_CHECK)"
-    if ! XRAY="$XRAY_BIN" node "$BIN_DIR/zen-scrape.js" --limit "$LIMIT" --concurrency 16 --timeout 6 --zen-check "$ZEN_CHECK"; then
+    if ! XRAY="$XRAY_BIN" node "$BIN_DIR/zen-scrape.js" --limit "$LIMIT" --concurrency 16 --timeout 6 --zen-only --zen-concurrency 4 --zen-check "$ZEN_CHECK"; then
       [ -f "$CONFIG_DIR/zen.json" ] || die "scrape failed and no config exists"
       warn "scrape failed; keeping the existing config"
     fi

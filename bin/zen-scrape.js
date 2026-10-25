@@ -55,6 +55,8 @@ const opt = {
   concurrency: 16,
   timeout: 6,
   zenCheck: 0,
+  zenOnly: false,
+  zenConcurrency: 4,
   test: true,
   dryRun: false,
   refresh: false,
@@ -78,6 +80,8 @@ const usage = () => {
   --timeout <sec>    per-probe timeout (default ${opt.timeout})
   --no-test          skip connectivity probes
   --zen-check <n>    verify the first n live exits against Zen (default 0)
+  --zen-only         test every live exit and keep only Zen-healthy ones
+  --zen-concurrency  parallel Zen checks (default 4)
   --sources <file>   JSON source list ({"sources":[{"name","url"}]})
   --source <url>     add one source URL (repeatable)
   --refresh          ignore the cached node list
@@ -103,6 +107,8 @@ for (let i = 0; i < argv.length; i++) {
     case "--concurrency": opt.concurrency = positive(value(), arg); break;
     case "--timeout": opt.timeout = positive(value(), arg); break;
     case "--zen-check": opt.zenCheck = nonNegative(value(), arg); break;
+    case "--zen-only": opt.zenOnly = true; break;
+    case "--zen-concurrency": opt.zenConcurrency = positive(value(), arg); break;
     case "--no-test": opt.test = false; break;
     case "--refresh": opt.refresh = true; break;
     case "--validate-only": opt.validateOnly = true; break;
@@ -866,54 +872,79 @@ async function probeExits(xray, nodes, basePort) {
     exitIp: results[i]?.ok ? results[i].ip : undefined,
   }));
   // Zen checks must run while this probe instance is still listening.
-  const withZen = opt.zenCheck
-    ? await checkZen(probed, probed.map((node, i) => (node.lastOk ? i : -1)).filter((i) => i >= 0))
-    : probed;
+  const liveIndexes = probed.map((node, i) => (node.lastOk ? i : -1)).filter((i) => i >= 0);
+  const selected = opt.zenOnly
+    ? (opt.zenCheck > 0 ? liveIndexes.slice(0, opt.zenCheck) : liveIndexes)
+    : liveIndexes.slice(0, opt.zenCheck);
+  const withZen = selected.length ? await checkZen(probed, selected) : probed;
   await stopChild(child);
   withZen.forEach((node) => { delete node.__probePort; });
   return withZen;
 }
 
-async function checkZen(nodes, liveIndexes) {
-  if (!opt.zenCheck || !liveIndexes.length) return nodes;
+async function checkZen(nodes, selected) {
+  if (!selected.length) return nodes;
   const opencode = process.env.OPENCODE_BIN || "opencode";
   const checkModel = process.env.ZEN_CHECK_MODEL || "opencode/big-pickle";
-  warn(`checking ${Math.min(opt.zenCheck, liveIndexes.length)} exit(s) against Zen; this uses free quota`);
-  const selected = liveIndexes.slice(0, opt.zenCheck);
-  for (const i of selected) {
-    const node = nodes[i];
-    const port = node.__probePort;
-    const env = {
-      ...process.env,
-      HTTPS_PROXY: `http://127.0.0.1:${port}`,
-      HTTP_PROXY: `http://127.0.0.1:${port}`,
-      ALL_PROXY: "",
-      all_proxy: "",
-      NO_PROXY: "localhost,127.0.0.1,::1",
-      ZEN_RETRY_DISABLE: "1",
-    };
-    const result = await new Promise((resolve) => {
-      const child = spawn(opencode, ["run", "--standalone", "--model", checkModel, "say OK"], {
-        cwd: os.tmpdir(),
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
+  warn(`checking ${selected.length} exit(s) against Zen; this uses free quota`);
+
+  // A minimal private config avoids loading MCP servers and the retry plugin
+  // for every probe, which cuts a check from ~20s to ~3s.
+  const probeDir = path.join(tmpDir(), "opencode-probe");
+  fs.mkdirSync(probeDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(
+    path.join(probeDir, "opencode.json"),
+    JSON.stringify({ $schema: "https://opencode.ai/config.json", mcp: {} }),
+  );
+
+  let next = 0;
+  const worker = async () => {
+    while (true) {
+      const i = next++;
+      if (i >= selected.length) return;
+      const node = nodes[selected[i]];
+      const port = node.__probePort;
+      const env = {
+        ...process.env,
+        OPENCODE_CONFIG_DIR: probeDir,
+        OPENCODE_DB: path.join(probeDir, `probe-${selected[i]}.db`),
+        OPENCODE_DISABLE_MODELS_FETCH: "1",
+        OPENCODE_DISABLE_AUTOUPDATE: "1",
+        OPENCODE_DISABLE_CLAUDE_CODE: "1",
+        OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+        HTTPS_PROXY: `http://127.0.0.1:${port}`,
+        HTTP_PROXY: `http://127.0.0.1:${port}`,
+        ALL_PROXY: "",
+        all_proxy: "",
+        NO_PROXY: "localhost,127.0.0.1,::1",
+        ZEN_RETRY_DISABLE: "1",
+      };
+      const result = await new Promise((resolve) => {
+        const child = spawn(opencode, ["run", "--standalone", "--model", checkModel, "say OK"], {
+          cwd: os.tmpdir(),
+          env,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let out = "";
+        let err = "";
+        child.stdout.on("data", (d) => { out += d.toString(); });
+        child.stderr.on("data", (d) => { err += d.toString(); });
+        const timer = setTimeout(() => { child.kill("SIGKILL"); resolve({ ok: false, text: "timeout" }); }, 45000);
+        child.on("error", (error) => { clearTimeout(timer); resolve({ ok: false, text: error.message }); });
+        child.on("close", () => {
+          clearTimeout(timer);
+          const text = `${out}\n${err}`;
+          resolve({ ok: /\bOK\b/.test(out) && !/FreeUsageLimit|FreeTierError/.test(text), text: text.slice(-400) });
+        });
       });
-      let out = "";
-      let err = "";
-      child.stdout.on("data", (d) => { out += d.toString(); });
-      child.stderr.on("data", (d) => { err += d.toString(); });
-      const timer = setTimeout(() => { child.kill("SIGKILL"); resolve({ ok: false, text: "timeout" }); }, 90000);
-      child.on("error", (error) => { clearTimeout(timer); resolve({ ok: false, text: error.message }); });
-      child.on("close", () => {
-        clearTimeout(timer);
-        const text = `${out}\n${err}`;
-        resolve({ ok: /\bOK\b/.test(out) && !/FreeUsageLimit|FreeTierError/.test(text), text: text.slice(-400) });
-      });
-    });
-    node.zenOk = result.ok;
-    node.zenChecked = Date.now();
-    debug(`zen ${node.host}:${node.port}: ${result.ok ? "OK" : "not OK"}`);
-  }
+      node.zenOk = result.ok;
+      node.zenChecked = Date.now();
+      debug(`zen ${node.host}:${node.port}: ${result.ok ? "OK" : "not OK"}`);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(opt.zenConcurrency, selected.length) }, worker),
+  );
   return nodes;
 }
 
@@ -1089,6 +1120,14 @@ async function validateExisting() {
     warn("no exit was reachable; keeping the existing config");
     return 1;
   }
+  if (opt.zenOnly) {
+    nodes = nodes.filter((node) => node.zenOk === true);
+    log(`zen: ${nodes.length} exit(s) still have free-tier quota`);
+    if (!nodes.length) {
+      warn("no exit passed the Zen quota check; keeping the existing config");
+      return 1;
+    }
+  }
 
   const seenExit = new Set();
   nodes = nodes.filter((node) => {
@@ -1174,6 +1213,14 @@ async function main() {
       const live = nodes.filter((node) => node.lastOk);
       log(`probe: ${live.length}/${nodes.length} exit(s) reachable`);
       if (live.length) {
+        if (opt.zenOnly) {
+          nodes = nodes.filter((node) => node.zenOk === true);
+          log(`zen: ${nodes.length} exit(s) still have free-tier quota`);
+          if (!nodes.length) {
+            warn("no exit passed the Zen quota check; keeping the existing config");
+            return 1;
+          }
+        }
         // Several nodes can hide behind the same exit IP. Keep one per IP so a
         // balancer rotation actually changes the free-tier allowance.
         const seenExit = new Set();

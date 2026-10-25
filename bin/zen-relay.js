@@ -67,6 +67,8 @@ const connections = new Set();
 let refetching = false;
 let lastRefetch = 0;
 let lastRefetchResult = null;
+let refetchTimer = null;
+let refetchScheduledAt = 0;
 
 const server = net.createServer((client) => {
   const now = Date.now();
@@ -138,6 +140,12 @@ const control = http.createServer((req, res) => {
   }
   if (req.method === 'POST' && url.pathname === '/refetch') {
     const force = url.searchParams.get('force') === '1' || url.searchParams.get('force') === 'true';
+    const delayMs = url.searchParams.get('delayMs');
+    if (delayMs !== null) {
+      const result = scheduleRefetch(Number(delayMs));
+      send(202, result);
+      return;
+    }
     const result = runRefetch(force);
     send(result.started ? 202 : 200, result);
     return;
@@ -153,6 +161,7 @@ const control = http.createServer((req, res) => {
       refetching,
       lastRefetch: lastRefetch ? new Date(lastRefetch).toISOString() : null,
       lastRefetchResult,
+      refetchScheduledAt: refetchScheduledAt ? new Date(refetchScheduledAt).toISOString() : null,
     });
     return;
   }
@@ -215,6 +224,30 @@ const runRefetch = (force = false) => {
     if (code === 0) rotate(false);
   });
   return { started: true };
+};
+
+/**
+ * The free-tier quota can reset hours from now (the gateway sends that in
+ * Retry-After). Schedule a refetch for the reset instead of polling.
+ */
+const scheduleRefetch = (delayMs) => {
+  if (REFETCH_DISABLED) return { scheduled: false, reason: 'disabled' };
+  const max = Number(process.env.ZEN_REFETCH_MAX_DELAY_MS || 24 * 3600 * 1000);
+  const delay = Math.max(1000, Math.min(Number(delayMs) || 0, max));
+  const at = Date.now() + delay;
+  if (refetchTimer && at >= refetchScheduledAt) {
+    return { scheduled: true, already: true, at: new Date(refetchScheduledAt).toISOString() };
+  }
+  if (refetchTimer) clearTimeout(refetchTimer);
+  refetchTimer = setTimeout(() => {
+    refetchTimer = null;
+    refetchScheduledAt = 0;
+    log('scheduled refetch firing');
+    runRefetch(false);
+  }, delay);
+  refetchScheduledAt = at;
+  log(`refetch scheduled for ${new Date(at).toISOString()} (${Math.round(delay / 1000)}s)`);
+  return { scheduled: true, at: new Date(at).toISOString() };
 };
 
 control.on('error', (error) => log(`control error: ${error.message}`));
