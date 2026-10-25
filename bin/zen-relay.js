@@ -139,7 +139,20 @@ server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     log(`Port ${LISTEN_PORT} in use, freeing port...`);
     try {
-      require('node:child_process').execFileSync('fuser', ['-k', '-9', `${LISTEN_PORT}/tcp`], { stdio: 'ignore' });
+      if (process.platform === 'win32') {
+        const out = require('node:child_process').execSync('netstat -ano -p tcp', { encoding: 'utf8' });
+        for (const line of out.split('\n')) {
+          if (line.includes(`:${LISTEN_PORT}`) && line.includes('LISTENING')) {
+            const parts = line.trim().split(/\s+/);
+            const pid = parts[parts.length - 1];
+            if (pid && pid !== '0' && pid !== String(process.pid)) {
+              try { require('node:child_process').execSync(`taskkill /F /PID ${pid}`); } catch (_) {}
+            }
+          }
+        }
+      } else {
+        require('node:child_process').execFileSync('fuser', ['-k', '-9', `${LISTEN_PORT}/tcp`], { stdio: 'ignore' });
+      }
     } catch (_) {}
     setTimeout(() => server.listen(LISTEN_PORT, LISTEN_HOST), 600);
   } else {

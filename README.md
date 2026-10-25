@@ -97,6 +97,36 @@ Useful install flags:
 ./bin/zen-install.sh --no-restart         # install/start proxy, leave OpenCode running
 ```
 
+## Windows Quick Start (PowerShell)
+
+Requirements: Windows 10/11, PowerShell 5.1+ (or PowerShell 7+), and Node.js 18+. Xray for Windows is detected or downloaded automatically.
+
+Clone and run the installer:
+
+```powershell
+git clone https://github.com/Hadixel/opencode-zen-proxy.git
+cd opencode-zen-proxy
+.\bin\zen-install.ps1
+```
+
+Or run directly via one-line installer:
+
+```powershell
+irm https://raw.githubusercontent.com/Hadixel/opencode-zen-proxy/main/bin/zen-install.ps1 | iex
+```
+
+### Windows Service Commands
+
+```powershell
+.\bin\zen-service.ps1 start       # Start Xray and zen-relay in background
+.\bin\zen-service.ps1 stop        # Stop proxy services cleanly
+.\bin\zen-service.ps1 restart     # Restart both services
+.\bin\zen-service.ps1 status      # Check ports and recent relay logs
+.\bin\zen-service.ps1 scrape      # Re-scrape and validate free-tier exits
+.\bin\zen-exit-check.ps1          # Verify current exit against OpenCode Zen
+.\run.ps1                         # One-click interactive foreground runner
+```
+
 > **Public nodes are shared and untrusted.** Their operators can observe the
 > traffic that passes through them. Do not use them for credentials, private
 > source code, or anything sensitive. Prefer your own VPS or a trusted provider

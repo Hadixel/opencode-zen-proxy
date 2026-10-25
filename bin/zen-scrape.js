@@ -669,6 +669,9 @@ function writeAtomic(file, text) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp.${process.pid}`;
   fs.writeFileSync(tmp, text, { mode: 0o600 });
+  try {
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+  } catch {}
   fs.renameSync(tmp, file);
   try { fs.chmodSync(file, 0o600); } catch {}
 }
@@ -678,23 +681,44 @@ function writeAtomic(file, text) {
 // ---------------------------------------------------------------------------
 
 function findXray() {
-  const candidates = [
-    process.env.XRAY,
-    "xray",
-    path.join(HOME, ".local", "share", "v2rayN", "bin", "xray", "xray"),
-    path.join(HOME, ".local", "bin", "xray"),
-    "/usr/local/bin/xray",
-    "/usr/bin/xray",
-  ].filter(Boolean);
-  for (const candidate of candidates) {
-    if (candidate === "xray") {
-      const found = process.env.PATH?.split(path.delimiter).find((dir) => {
-        try { fs.accessSync(path.join(dir, "xray"), fs.constants.X_OK); return true; } catch { return false; }
-      });
-      if (found) return path.join(found, "xray");
-      continue;
+  const isWin = process.platform === "win32";
+  const exeNames = isWin ? ["xray.exe", "xray"] : ["xray"];
+
+  if (process.env.XRAY && fs.existsSync(process.env.XRAY)) {
+    return process.env.XRAY;
+  }
+
+  // Check PATH
+  const pathDirs = (process.env.PATH || "").split(path.delimiter);
+  for (const dir of pathDirs) {
+    for (const exe of exeNames) {
+      const candidate = path.join(dir, exe);
+      if (fs.existsSync(candidate)) return candidate;
     }
-    try { fs.accessSync(candidate, fs.constants.X_OK); return candidate; } catch {}
+  }
+
+  // Common platform paths
+  const candidatePaths = [];
+  for (const exe of exeNames) {
+    candidatePaths.push(
+      path.join(HOME, ".local", "share", "v2rayN", "bin", "xray", exe),
+      path.join(HOME, ".local", "bin", exe),
+      path.join(HOME, ".local", "share", "zen-proxy", exe),
+      path.join(HOME, ".local", "share", "zen-proxy", "xray", exe),
+      path.join(HOME, "v2rayN", "bin", "xray", exe),
+      path.join(HOME, "Downloads", "v2rayN", "bin", "xray", exe),
+      path.join(process.env.LOCALAPPDATA || "", "v2rayN", "bin", "xray", exe),
+      path.join(process.env.APPDATA || "", "v2rayN", "bin", "xray", exe),
+      path.join(process.env["ProgramFiles"] || "C:\\Program Files", "v2rayN", "bin", "xray", exe),
+      path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "v2rayN", "bin", "xray", exe),
+      path.join(HOME, "scoop", "apps", "xray", "current", exe),
+      `/usr/local/bin/${exe}`,
+      `/usr/bin/${exe}`
+    );
+  }
+
+  for (const candidate of candidatePaths) {
+    if (candidate && fs.existsSync(candidate)) return candidate;
   }
   return null;
 }
