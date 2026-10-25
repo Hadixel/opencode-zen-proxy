@@ -46,7 +46,7 @@ const ROTATE_MS = Number(process.env.ZEN_RELAY_ROTATE_MS || 180000);
 const SOFT_IDLE_MS = Number(process.env.ZEN_RELAY_SOFT_IDLE_MS || 15000);
 const HARD_IDLE_MS = Number(process.env.ZEN_RELAY_HARD_IDLE_MS || 300000);
 const MAX_MS = Number(process.env.ZEN_RELAY_MAX_MS || 900000);
-const RETIRE_MS = Number(process.env.ZEN_RELAY_RETIRE_MS || 250);
+const RETIRE_MS = Number(process.env.ZEN_RELAY_RETIRE_MS || 1000);
 const TICK_MS = 1000;
 
 const log = (...a) => console.log(new Date().toISOString(), '[zen-relay]', ...a);
@@ -63,8 +63,12 @@ const server = net.createServer((client) => {
     if (conn.closed) return;
     conn.closed = true;
     connections.delete(conn);
-    conn.client.destroy();
-    conn.upstream.destroy();
+    try { conn.client.end(); } catch (_) {}
+    try { conn.upstream.end(); } catch (_) {}
+    setTimeout(() => {
+      try { conn.client.destroy(); } catch (_) {}
+      try { conn.upstream.destroy(); } catch (_) {}
+    }, 600).unref?.();
     log(`${why} after ${Math.round((Date.now() - conn.started) / 1000)}s`);
   };
   conn.close = close;
@@ -83,16 +87,12 @@ const server = net.createServer((client) => {
  * closed on this tick; a busy one is marked and closed once it goes quiet for
  * RETIRE_MS. With `all`, close everything regardless (used by manual tooling).
  */
-const rotate = (all) => {
-  const now = Date.now();
+const rotate = (all = true) => {
   const total = connections.size;
   let closed = 0;
   for (const conn of connections) {
-    conn.retire = true;
-    if (all || now - conn.last > RETIRE_MS) {
-      conn.close(all ? 'rotated-request-all' : 'rotated-request');
-      closed++;
-    }
+    conn.close(all ? 'rotated-request-all' : 'rotated-request');
+    closed++;
   }
   return { closed, retired: total, active: connections.size };
 };
@@ -118,6 +118,8 @@ const control = http.createServer((req, res) => {
   };
   if (req.method === 'POST' && url.pathname === '/rotate') {
     const all = url.searchParams.get('all') === '1' || url.searchParams.get('all') === 'true';
+    const reason = url.searchParams.get('reason') || 'unknown';
+    log(`CONTROL: /rotate called (all=${all}, reason=${reason})`);
     send(200, rotate(all));
     return;
   }

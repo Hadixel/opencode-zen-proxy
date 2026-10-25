@@ -32,33 +32,47 @@
 const CONTROL =
   process.env.ZEN_RELAY_CONTROL ||
   `http://127.0.0.1:${process.env.ZEN_RELAY_CONTROL_PORT || 10902}/rotate`;
-const MAX_RETRIES = Number(process.env.ZEN_RETRY_MAX || 8);
-const RETRY_DELAY_MS = Number(process.env.ZEN_RETRY_DELAY_MS || 750);
-const DEBUG = process.env.ZEN_RETRY_DEBUG === "1";
-// Probe tools (zen-scrape --zen-check, zen-exit-check --sweep) want one answer
-// per exit, not a retry storm through the same exit.
+const MAX_RETRIES = Number(process.env.ZEN_RETRY_MAX || 25);
+const RETRY_DELAY_MS = Number(process.env.ZEN_RETRY_DELAY_MS || 500);
+const DEBUG = true; // Always enable logging to track retry behavior
 const DISABLED = process.env.ZEN_RETRY_DISABLE === "1";
 
 const log = (...args) => {
-  if (DEBUG) console.error("[zen-retry]", ...args);
+  console.error("[zen-retry]", ...args);
 };
 
 const isZen = (event) => {
-  if (event.model?.providerID) return event.model.providerID === "opencode";
+  if (typeof event.model === "string") {
+    if (event.model.startsWith("opencode/") || event.model.includes("opencode")) return true;
+  }
+  if (event.model?.providerID) {
+    if (event.model.providerID === "opencode") return true;
+  }
+  if (event.model?.id && typeof event.model.id === "string") {
+    if (event.model.id.startsWith("opencode/") || event.model.id.includes("opencode")) return true;
+  }
   const url = event.request?.url;
-  return typeof url === "string" && url.includes("opencode.ai/");
+  if (typeof url === "string" && (url.includes("opencode.ai/") || url.includes("/zen/"))) {
+    return true;
+  }
+  const errStr = `${event.error?.name || ""} ${event.error?.message || ""} ${event.error?.type || ""}`;
+  if (/FreeTierError|FreeUsageLimit|QuotaExceeded|opencode\.ai/i.test(errStr)) {
+    return true;
+  }
+  return false;
 };
 
 /** Retire the relay's current tunnel. Best effort: a missing relay must not break the retry. */
 const rotate = async (reason) => {
   try {
-    const res = await fetch(CONTROL, {
+    log("rotating relay tunnel:", reason);
+    const res = await fetch(`${CONTROL}?all=1&reason=${encodeURIComponent(reason)}`, {
       method: "POST",
       signal: AbortSignal.timeout(1500),
     });
-    if (DEBUG) log("rotated", reason, await res.text());
+    log("rotated:", reason, await res.text());
   } catch (error) {
-    if (DEBUG) log("rotate failed", reason, error?.message || error);
+    log("rotate failed:", reason, error?.message || error);
   }
 };
 
@@ -73,7 +87,7 @@ const rotateOnce = async (reason) => {
 /** Free-tier and quota bodies that OpenCode deliberately refuses to retry. */
 const retryableBody = (body) =>
   typeof body === "string" &&
-  /FreeTierError|FreeUsageLimitError|free[_-]?limit|usage limit|rate.?limit/i.test(body);
+  /FreeTierError|FreeUsageLimitError|free[_-]?limit|usage limit|rate.?limit|QuotaExceeded/i.test(body);
 
 export default {
   id: "zen.retry",
@@ -93,25 +107,40 @@ export default {
       } catch {
         // A response with immutable headers is still handled by the retry hook.
       }
-      // Do not block the response body on the rotation request.
-      void rotateOnce(`http ${status}`);
     });
 
     // Force the retry even though OpenCode classifies free-tier responses as
     // quota/auth errors. Rotate first so the next attempt uses a new exit.
     await ctx.session.hook("retry", async (event) => {
+      console.error("[zen-retry] RETRY HOOK FIRED!", {
+        error: event.error?.message,
+        type: event.error?.type,
+        status: event.error?.status,
+        model: event.model,
+        keys: Object.keys(event)
+      });
       const status = event.error?.status;
       const body = event.error?.response?.body;
       const type = event.error?.type;
+      const errName = event.error?.name;
+      const errMsg = event.error?.message;
       const quota =
         status === 403 ||
         status === 429 ||
         type === "provider.free-limit" ||
         type === "provider.rate-limit" ||
+        errName === "QuotaExceeded" ||
         retryableBody(body) ||
-        retryableBody(event.error?.message);
-      if (!quota) return;
-      if (!isZen(event)) return;
+        retryableBody(errMsg) ||
+        retryableBody(String(event.error));
+      if (!quota) {
+        console.error("[zen-retry] not recognized as quota error");
+        return;
+      }
+      if (!isZen(event)) {
+        console.error("[zen-retry] isZen returned false, event.model:", event.model);
+        return;
+      }
       if (event.attempt > MAX_RETRIES) {
         log("retry budget exhausted", event.attempt);
         event.decision = { retry: false };

@@ -876,10 +876,13 @@ async function probeExits(xray, nodes, basePort) {
 async function checkZen(nodes, liveIndexes) {
   if (!opt.zenCheck || !liveIndexes.length) return nodes;
   const opencode = process.env.OPENCODE_BIN || "opencode";
-  const checkModel = process.env.ZEN_CHECK_MODEL || "opencode/big-pickle";
-  warn(`checking ${Math.min(opt.zenCheck, liveIndexes.length)} exit(s) against Zen; this uses free quota`);
+  const checkModel = process.env.ZEN_CHECK_MODEL || "opencode/deepseek-v4.1-flash-free";
+  const targetZenOk = Number(process.env.ZEN_TARGET_OK || 5);
+  warn(`checking up to ${Math.min(opt.zenCheck, liveIndexes.length)} exit(s) against Zen (${checkModel}) for ${targetZenOk} working exits`);
   const selected = liveIndexes.slice(0, opt.zenCheck);
+  let foundOk = 0;
   for (const i of selected) {
+    if (foundOk >= targetZenOk) break;
     const node = nodes[i];
     const port = node.__probePort;
     const env = {
@@ -901,17 +904,19 @@ async function checkZen(nodes, liveIndexes) {
       let err = "";
       child.stdout.on("data", (d) => { out += d.toString(); });
       child.stderr.on("data", (d) => { err += d.toString(); });
-      const timer = setTimeout(() => { child.kill("SIGKILL"); resolve({ ok: false, text: "timeout" }); }, 90000);
+      const timer = setTimeout(() => { child.kill("SIGKILL"); resolve({ ok: false, text: "timeout" }); }, 25000);
       child.on("error", (error) => { clearTimeout(timer); resolve({ ok: false, text: error.message }); });
       child.on("close", () => {
         clearTimeout(timer);
         const text = `${out}\n${err}`;
-        resolve({ ok: /\bOK\b/.test(out) && !/FreeUsageLimit|FreeTierError/.test(text), text: text.slice(-400) });
+        const ok = /\bOK\b/.test(out) && !/FreeUsageLimit|FreeTierError|free usage limit/i.test(text);
+        resolve({ ok, text: text.slice(-400) });
       });
     });
     node.zenOk = result.ok;
     node.zenChecked = Date.now();
-    debug(`zen ${node.host}:${node.port}: ${result.ok ? "OK" : "not OK"}`);
+    warn(`zen check [${node.protocol}] ${node.host}:${node.port} -> ${result.ok ? "SUCCESS (OK)" : "FAIL"}`);
+    if (result.ok) foundOk++;
   }
   return nodes;
 }
@@ -921,15 +926,14 @@ async function checkZen(nodes, liveIndexes) {
 // ---------------------------------------------------------------------------
 
 function buildConfig(nodes) {
-  // Duplicate exits that were verified against Zen. Xray's balancer has no
-  // weights, so a few copies of a known-good exit give the first request (and
-  // the first retry) a much better chance of landing on it.
+  const verified = nodes.filter((n) => n.zenOk);
+  const useNodes = verified.length > 0 ? verified : nodes;
+  if (verified.length > 0) {
+    warn(`building config using ${verified.length} verified Zen-capable exit(s)`);
+  }
   const entries = [];
-  nodes.forEach((node, i) => {
+  useNodes.forEach((node, i) => {
     entries.push({ node, tag: `pub${i}` });
-    if (node.zenOk) {
-      for (let copy = 1; copy < 4; copy++) entries.push({ node, tag: `pub${i}x${copy}` });
-    }
   });
   const tags = entries.map((entry) => entry.tag);
   const privateIps = [
@@ -971,7 +975,7 @@ function buildConfig(nodes) {
     ],
     routing: {
       domainStrategy: "IPIfNonMatch",
-      balancers: [{ tag: "zenbal", selector: tags, strategy: { type: "random" } }],
+      balancers: [{ tag: "zenbal", selector: tags, strategy: { type: "roundRobin" } }],
       rules: [
         { type: "field", inboundTag: ["mixed-in"], port: 53, outboundTag: "dns-out" },
         { type: "field", inboundTag: ["dns-in"], outboundTag: "dns-out" },
